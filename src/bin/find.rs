@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         }
     }
 
-    let mut stdout = io::BufWriter::new(io::stdout().lock());
+    let mut stdout = io::BufWriter::with_capacity(64 * 1024, io::stdout().lock());
     match walker::walk(&config, &mut stdout) {
         Ok(_) => {
             let _ = stdout.flush();

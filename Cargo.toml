@@ -10,7 +10,7 @@ keywords = ["find", "search", "parallel", "cli"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
-clap = { version = "4", features = ["derive", "env"] }
+jwalk = "0.8"
 regex = "1"
 
 [dev-dependencies]

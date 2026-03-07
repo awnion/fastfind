@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::io::Write;
 use std::path::Path;
@@ -10,8 +9,7 @@ use crate::cli::FileType;
 use crate::cli::glob_to_regex;
 
 /// Walk the filesystem tree and print matching entries to stdout.
-/// Returns true if at least one entry was printed.
-pub fn walk(config: &Config, stdout: &mut impl Write) -> io::Result<bool> {
+pub fn walk(config: &Config, stdout: &mut impl Write) -> io::Result<()> {
     let name_re = config
         .name_pattern
         .as_ref()
@@ -21,75 +19,79 @@ pub fn walk(config: &Config, stdout: &mut impl Write) -> io::Result<bool> {
         })
         .transpose()?;
 
-    let mut found = false;
     for path in &config.paths {
-        found |= walk_dir(config, path, 0, &name_re, stdout)?;
+        walk_jwalk(config, path, &name_re, stdout)?;
     }
-    Ok(found)
+    Ok(())
 }
 
-fn walk_dir(
-    config: &Config,
-    path: &Path,
-    depth: usize,
+#[cfg(unix)]
+fn write_path(stdout: &mut impl Write, path: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    stdout.write_all(path.as_os_str().as_bytes())?;
+    stdout.write_all(b"\n")
+}
+
+#[cfg(not(unix))]
+fn write_path(stdout: &mut impl Write, path: &Path) -> io::Result<()> {
+    writeln!(stdout, "{}", path.display())
+}
+
+fn matches_entry(
+    file_type_filter: Option<FileType>,
     name_re: &Option<Regex>,
-    stdout: &mut impl Write,
-) -> io::Result<bool> {
-    // respect maxdepth for traversal
-    if config.max_depth.is_some_and(|max| depth > max) {
-        return Ok(false);
-    }
-
-    let mut found = false;
-
-    // check if current entry matches filters
-    if depth >= config.min_depth && matches_filters(config, path, name_re) {
-        writeln!(stdout, "{}", path.display())?;
-        found = true;
-    }
-
-    // stop descending if maxdepth reached
-    if config.max_depth.is_some_and(|max| depth >= max) {
-        return Ok(found);
-    }
-
-    // descend into directories
-    if path.is_dir() {
-        let mut entries: Vec<_> =
-            fs::read_dir(path)?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
-        entries.sort();
-
-        for entry in entries {
-            found |= walk_dir(config, &entry, depth + 1, name_re, stdout)?;
-        }
-    }
-
-    Ok(found)
-}
-
-fn matches_filters(config: &Config, path: &Path, name_re: &Option<Regex>) -> bool {
-    // type filter
-    if let Some(ft) = config.file_type {
+    entry: &jwalk::DirEntry<((), ())>,
+) -> bool {
+    // type filter using d_type (no extra stat on Linux/macOS)
+    if let Some(ft) = file_type_filter {
         let ok = match ft {
-            FileType::File => path.is_file(),
-            FileType::Directory => path.is_dir(),
-            FileType::Symlink => path.is_symlink(),
+            FileType::File => entry.file_type.is_file(),
+            FileType::Directory => entry.file_type.is_dir(),
+            FileType::Symlink => entry.file_type.is_symlink(),
         };
         if !ok {
             return false;
         }
     }
 
-    // name filter (matches against the file name component only)
+    // name filter
     if let Some(re) = name_re {
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => return false,
-        };
+        let name = entry.file_name.to_str().unwrap_or("");
         if !re.is_match(name) {
             return false;
         }
     }
 
     true
+}
+
+fn walk_jwalk(
+    config: &Config,
+    root: &Path,
+    name_re: &Option<Regex>,
+    stdout: &mut impl Write,
+) -> io::Result<()> {
+    let mut walker = jwalk::WalkDir::new(root).skip_hidden(false);
+
+    if let Some(max) = config.max_depth {
+        walker = walker.max_depth(max);
+    }
+
+    if config.min_depth > 0 {
+        walker = walker.min_depth(config.min_depth);
+    }
+
+    let file_type = config.file_type;
+
+    for entry in walker {
+        let Ok(entry) = entry else { continue };
+
+        if !matches_entry(file_type, name_re, &entry) {
+            continue;
+        }
+
+        write_path(stdout, &entry.path())?;
+    }
+
+    Ok(())
 }
