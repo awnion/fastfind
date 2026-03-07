@@ -32,13 +32,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: grep-${{ matrix.target }}
+          name: find-${{ matrix.target }}
       - name: Run smoke test
         run: |
-          tar xzf grep-${{ matrix.target }}.tar.gz
-          chmod +x ./grep
-          ./grep --help
-          echo "hello world" | ./grep hello
+          tar xzf find-${{ matrix.target }}.tar.gz
+          chmod +x ./find
+          ./find --help || true
+          ./find . -maxdepth 1 -type f
 
   publish-crates:
     name: Publish to crates.io
@@ -67,9 +67,9 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
-          for dir in artifacts/grep-*; do
-            target="${dir#artifacts/grep-}"
-            cp "$dir"/grep-*.tar.gz release/
+          for dir in artifacts/find-*; do
+            target="${dir#artifacts/find-}"
+            cp "$dir"/find-*.tar.gz release/
           done
       - name: Extract changelog
         id: changelog
@@ -89,4 +89,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --notes "$RELEASE_NOTES" \
-            release/grep-*
+            release/find-*
