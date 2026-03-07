@@ -76,6 +76,12 @@ impl Config {
                 "-print" => {
                     // default action, accepted but no-op
                 }
+                "--version" | "-version" => {
+                    return Err("__version__".into());
+                }
+                "--help" | "-help" => {
+                    return Err("__help__".into());
+                }
                 other => {
                     return Err(format!("unknown option: `{other}`"));
                 }
