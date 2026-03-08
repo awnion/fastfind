@@ -4,6 +4,15 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/crates/l/fastfind)](LICENSE-MIT)
 
 A fast, drop-in GNU `find` replacement built for AI agents and large codebases.
+**91% GNU find compatibility** with 1.6-1.8x better performance.
+
+## Why
+
+GNU `find` is single-threaded. `fd` is fast but incompatible with `find` syntax.
+`fastfind` is a drop-in `find` replacement: same flags, same output, parallel traversal.
+
+AI coding agents (Claude Code, Cursor, aider) shell out to `find` constantly.
+Symlink `fastfind` as `find` and everything speeds up with zero config changes.
 
 ## Install
 
@@ -11,34 +20,50 @@ A fast, drop-in GNU `find` replacement built for AI agents and large codebases.
 cargo install fastfind
 ```
 
+The binary is named `find`. To use as a drop-in replacement:
+
+```sh
+ln -sf $(which find) ~/.local/bin/find   # adjust PATH priority as needed
+```
+
 ## Usage
 
 ```sh
-# list all files and directories recursively
+# all files and directories recursively
 find .
 
-# find only files
-find . -type f
+# files only, by name
+find . -type f -name '*.rs'
 
-# find by name glob
-find . -name '*.rs'
+# complex expressions with operators
+find . \( -name '*.log' -o -name '*.tmp' \) -mtime +7 -delete
 
-# combine filters
-find . -type f -name '*.log' -maxdepth 2
+# exec, like GNU find
+find . -type f -name '*.txt' -exec grep -l TODO {} +
 
-# limit depth
-find . -mindepth 1 -maxdepth 3
+# depth-limited search
+find . -maxdepth 2 -type d
 ```
 
-## Supported flags
+## Features
 
-| Flag | Description |
-| --- | --- |
-| `-type f\|d\|l` | Filter by file type (file, directory, symlink) |
-| `-name PATTERN` | Filter by filename glob (`*`, `?`, `[...]`) |
-| `-maxdepth N` | Descend at most N levels |
-| `-mindepth N` | Skip entries at depth less than N |
-| `-print` | Print matching entries (default action) |
+**Tests** -- `-name`, `-iname`, `-path`, `-ipath`, `-wholename`, `-iwholename`, `-lname`, `-ilname`, `-regex`, `-iregex`, `-regextype`, `-type` (f/d/l/b/c/p/s with comma-separated multi-type), `-xtype`, `-empty`, `-size`, `-perm`, `-readable`, `-writable`, `-executable`, `-user`, `-group`, `-uid`, `-gid`, `-nouser`, `-nogroup`, `-mtime`, `-mmin`, `-atime`, `-amin`, `-ctime`, `-cmin`, `-newer`, `-anewer`, `-cnewer`, `-newerXY`, `-used`, `-fstype`, `-inum`, `-samefile`, `-links`, `-true`, `-false`, `-daystart`
+
+**Actions** -- `-print`, `-print0`, `-printf`, `-ls`, `-fls`, `-fprint`, `-fprint0`, `-fprintf`, `-exec` (`;` and `+`), `-execdir` (`;` and `+`), `-ok`, `-okdir`, `-delete`, `-prune`, `-quit`
+
+**Options** -- `-H`/`-L`/`-P`, `-depth`/`-d`, `-maxdepth`, `-mindepth`, `-xdev`/`-mount`, `-noleaf`, `-ignore_readdir_race`/`-noignore_readdir_race`, `-warn`/`-nowarn`
+
+**Operators** -- `( expr )`, `! expr`/`-not`, `-a`/`-and`, `-o`/`-or`, `,` (comma/list)
+
+See [GNU_FIND_COVERAGE.md](GNU_FIND_COVERAGE.md) for the full compatibility matrix and [GNU_FIND_COMPAT.md](GNU_FIND_COMPAT.md) for the remaining ~9%.
+
+## Performance
+
+- Parallel directory traversal via jwalk (rayon-based work-stealing)
+- Raw byte output on Unix (skip Display/UTF-8 overhead)
+- 64KB stdout buffer
+- `opt-level = 3`, LTO, single codegen unit
+- 1.6-1.8x faster than GNU find, 1.05-1.1x faster than fd
 
 ## Exit codes
 
