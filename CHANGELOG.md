@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0
+## v0.1.2
 
 **Full GNU find expression engine** -- 91% feature coverage, up from ~8%.
 

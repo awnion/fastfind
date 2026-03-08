@@ -144,6 +144,7 @@ impl EntryType {
 
     #[cfg(unix)]
     pub fn from_mode(mode: u32) -> Self {
+        #[allow(clippy::unnecessary_cast)]
         match mode & libc::S_IFMT as u32 {
             m if m == libc::S_IFREG as u32 => EntryType::File,
             m if m == libc::S_IFDIR as u32 => EntryType::Directory,
@@ -870,6 +871,7 @@ fn eval_ls(entry: &mut EntryInfo, out: &mut dyn Write) -> io::Result<()> {
 
 #[cfg(unix)]
 fn format_mode(mode: u32) -> String {
+    #[allow(clippy::unnecessary_cast)]
     let ft = match mode & libc::S_IFMT as u32 {
         m if m == libc::S_IFDIR as u32 => 'd',
         m if m == libc::S_IFLNK as u32 => 'l',
@@ -884,6 +886,7 @@ fn format_mode(mode: u32) -> String {
     s.push(ft);
     s.push(if mode & 0o400 != 0 { 'r' } else { '-' });
     s.push(if mode & 0o200 != 0 { 'w' } else { '-' });
+    #[allow(clippy::unnecessary_cast)]
     s.push(if mode & libc::S_ISUID as u32 != 0 {
         if mode & 0o100 != 0 { 's' } else { 'S' }
     } else if mode & 0o100 != 0 {
@@ -893,6 +896,7 @@ fn format_mode(mode: u32) -> String {
     });
     s.push(if mode & 0o040 != 0 { 'r' } else { '-' });
     s.push(if mode & 0o020 != 0 { 'w' } else { '-' });
+    #[allow(clippy::unnecessary_cast)]
     s.push(if mode & libc::S_ISGID as u32 != 0 {
         if mode & 0o010 != 0 { 's' } else { 'S' }
     } else if mode & 0o010 != 0 {
@@ -902,6 +906,7 @@ fn format_mode(mode: u32) -> String {
     });
     s.push(if mode & 0o004 != 0 { 'r' } else { '-' });
     s.push(if mode & 0o002 != 0 { 'w' } else { '-' });
+    #[allow(clippy::unnecessary_cast)]
     s.push(if mode & libc::S_ISVTX as u32 != 0 {
         if mode & 0o001 != 0 { 't' } else { 'T' }
     } else if mode & 0o001 != 0 {
