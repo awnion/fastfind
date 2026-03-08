@@ -1231,7 +1231,7 @@ fn check_fstype(path: &Path, expected: &str) -> io::Result<bool> {
         #[cfg(target_os = "linux")]
         {
             // On Linux, f_type is a numeric value
-            let fstype_name = linux_fstype_name(buf.f_type);
+            let fstype_name = linux_fstype_name(buf.f_type as i64);
             Ok(fstype_name == expected)
         }
 
@@ -1245,8 +1245,8 @@ fn check_fstype(path: &Path, expected: &str) -> io::Result<bool> {
 }
 
 #[cfg(all(unix, target_os = "linux"))]
-fn linux_fstype_name(f_type: libc::__fsword_t) -> &'static str {
-    match f_type {
+fn linux_fstype_name(f_type: i64) -> &'static str {
+    match f_type as i64 {
         0x9123683E => "btrfs",
         0xEF53 => "ext2/ext3/ext4",
         0x6969 => "nfs",
