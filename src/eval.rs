@@ -1231,6 +1231,7 @@ fn check_fstype(path: &Path, expected: &str) -> io::Result<bool> {
         #[cfg(target_os = "linux")]
         {
             // On Linux, f_type is a numeric value
+            #[allow(clippy::unnecessary_cast)]
             let fstype_name = linux_fstype_name(buf.f_type as i64);
             Ok(fstype_name == expected)
         }
@@ -1246,7 +1247,7 @@ fn check_fstype(path: &Path, expected: &str) -> io::Result<bool> {
 
 #[cfg(all(unix, target_os = "linux"))]
 fn linux_fstype_name(f_type: i64) -> &'static str {
-    match f_type as i64 {
+    match f_type {
         0x9123683E => "btrfs",
         0xEF53 => "ext2/ext3/ext4",
         0x6969 => "nfs",
