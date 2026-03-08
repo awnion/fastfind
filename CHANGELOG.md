@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.3
+
+- Replace hand-written `--help` with clap-generated output
+- Structured help: sections for symlink options, global options, tests, actions, operators
+- Bash-style syntax highlighting in examples (commands, flags, patterns, placeholders)
+- Add `-exec`/`-execdir` usage examples with `\;` vs `+` explained
+- Colors auto-stripped when piped (via clap's anstream)
+- Clean up dead code in `cli.rs`, remove backward-compat shim from `lib.rs`
+
 ## v0.1.2
 
 **Full GNU find expression engine** -- 91% feature coverage, up from ~8%.

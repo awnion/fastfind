@@ -1,6 +1,6 @@
 [package]
 name = "fastfind"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.92"
 license = "MIT OR Apache-2.0"
@@ -10,9 +10,10 @@ keywords = ["find", "search", "parallel", "cli"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
+clap = { version = "4.5.60", features = ["wrap_help"] }
 jwalk = "0.8"
 libc = "0.2"
-regex = "1"
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
