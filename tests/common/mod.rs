@@ -4,7 +4,7 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-pub const GNU_FIND: &str = "find";
+pub const GNU_FIND: &str = "gfind";
 
 pub fn fastfind_bin() -> std::path::PathBuf {
     let mut path =
@@ -73,6 +73,40 @@ pub fn assert_same_output(dir: &str, args: &[&str]) {
         "exit codes differ for args {args:?}: gnu={gnu_exit}, fast={fast_exit}\ngnu: {gnu:?}\nfast: {fast:?}"
     );
     assert_eq!(gnu, fast, "output differs for args {args:?}\ngnu: {gnu:?}\nfast: {fast:?}");
+}
+
+/// Assert same output when flags appear before the path (e.g. -L).
+pub fn assert_same_output_with_leading(dir: &str, leading: &[&str], args: &[&str]) {
+    let mut gnu_args = Vec::new();
+    gnu_args.extend_from_slice(leading);
+    gnu_args.push(dir);
+    gnu_args.extend_from_slice(args);
+
+    let mut fast_args = Vec::new();
+    fast_args.extend_from_slice(leading);
+    fast_args.push(dir);
+    fast_args.extend_from_slice(args);
+
+    let gnu = Command::new(GNU_FIND).args(&gnu_args).output().expect("failed to run GNU find");
+    let fast =
+        Command::new(fastfind_bin()).args(&fast_args).output().expect("failed to run fastfind");
+
+    let mut gnu_lines: Vec<String> =
+        String::from_utf8_lossy(&gnu.stdout).lines().map(String::from).collect();
+    let mut fast_lines: Vec<String> =
+        String::from_utf8_lossy(&fast.stdout).lines().map(String::from).collect();
+
+    gnu_lines.sort();
+    fast_lines.sort();
+
+    let gnu_exit = gnu.status.code().unwrap_or(-1);
+    let fast_exit = fast.status.code().unwrap_or(-1);
+
+    assert_eq!(
+        gnu_exit, fast_exit,
+        "exit codes differ: gnu={gnu_exit}, fast={fast_exit}\ngnu: {gnu_lines:?}\nfast: {fast_lines:?}"
+    );
+    assert_eq!(gnu_lines, fast_lines, "output differs\ngnu: {gnu_lines:?}\nfast: {fast_lines:?}");
 }
 
 /// Run fastfind and return sorted stdout lines.

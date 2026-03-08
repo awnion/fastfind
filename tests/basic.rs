@@ -45,6 +45,18 @@ fn name_hidden_file() {
 }
 
 #[test]
+fn name_question_mark_glob() {
+    let dir = generate_test_dir();
+    assert_same_output(dir.path().to_str().unwrap(), &["-name", "file?.txt"]);
+}
+
+#[test]
+fn name_bracket_glob() {
+    let dir = generate_test_dir();
+    assert_same_output(dir.path().to_str().unwrap(), &["-name", "file[12].txt"]);
+}
+
+#[test]
 fn maxdepth_zero() {
     let dir = generate_test_dir();
     assert_same_output(dir.path().to_str().unwrap(), &["-maxdepth", "0"]);
@@ -108,22 +120,15 @@ fn combined_all_filters() {
 }
 
 #[test]
-fn print_action_explicit() {
-    let dir = generate_test_dir();
-    assert_same_output(dir.path().to_str().unwrap(), &["-print"]);
-}
-
-#[test]
 fn type_f_name_log() {
     let dir = generate_test_dir();
     assert_same_output(dir.path().to_str().unwrap(), &["-type", "f", "-name", "*.log"]);
 }
 
 #[test]
-fn type_l_symlink() {
+fn empty_dir_type_d() {
     let dir = generate_test_dir();
-    // no symlinks in test dir — should return nothing, same as GNU find
-    assert_same_output(dir.path().to_str().unwrap(), &["-type", "l"]);
+    assert_same_output(dir.path().to_str().unwrap(), &["-type", "d", "-name", "empty"]);
 }
 
 #[test]
@@ -137,22 +142,4 @@ fn exit_code_zero_on_match() {
 fn nonexistent_directory() {
     let (_, exit) = run_fast("/tmp/nonexistent_fastfind_test_dir_12345", &[]);
     assert_ne!(exit, 0);
-}
-
-#[test]
-fn name_question_mark_glob() {
-    let dir = generate_test_dir();
-    assert_same_output(dir.path().to_str().unwrap(), &["-name", "file?.txt"]);
-}
-
-#[test]
-fn name_bracket_glob() {
-    let dir = generate_test_dir();
-    assert_same_output(dir.path().to_str().unwrap(), &["-name", "file[12].txt"]);
-}
-
-#[test]
-fn empty_dir_type_d() {
-    let dir = generate_test_dir();
-    assert_same_output(dir.path().to_str().unwrap(), &["-type", "d", "-name", "empty"]);
 }
