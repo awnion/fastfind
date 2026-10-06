@@ -9,17 +9,26 @@ env:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}, ${{ matrix.toolchain }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, ubuntu-26.04, ubuntu-26.04-arm, macos-26]
+        toolchain: [stable, nightly]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run unit tests
-        run: cargo test --release --lib
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Install GNU find
+        if: runner.os == 'macOS'
+        run: brew list findutils >/dev/null 2>&1 || brew install findutils
+      - name: Run unit and integration tests
+        run: cargo +${{ matrix.toolchain }} nextest run --locked --release
       - name: Run doc tests
-        run: cargo test --release --doc
+        run: cargo +${{ matrix.toolchain }} test --locked --release --doc

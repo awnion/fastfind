@@ -4,13 +4,13 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+#[cfg(target_os = "macos")]
 pub const GNU_FIND: &str = "gfind";
+#[cfg(not(target_os = "macos"))]
+pub const GNU_FIND: &str = "/usr/bin/find";
 
 pub fn fastfind_bin() -> std::path::PathBuf {
-    let mut path =
-        std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().to_path_buf();
-    path.push("find");
-    path
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_find"))
 }
 
 /// Create a test directory tree:

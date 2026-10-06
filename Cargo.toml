@@ -2,7 +2,7 @@
 name = "fastfind"
 version = "0.1.3"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 description = "Fast parallel find — a drop-in GNU find replacement for AI agents and large codebases"
 repository = "https://github.com/awnion/fastfind"
@@ -10,14 +10,14 @@ keywords = ["find", "search", "parallel", "cli"]
 categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
-clap = { version = "4.5.60", features = ["wrap_help"] }
-jwalk = "0.8"
+clap = { version = "4", features = ["wrap_help"] }
+jwalk = "0.9"
 libc = "0.2"
 regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-rstest = "0.26"
+rstest = "0.27"
 serde_json = "1"
 tempfile = "3"
 
