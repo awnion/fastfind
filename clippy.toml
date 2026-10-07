@@ -1,6 +1,6 @@
 # :schema
 
-msrv = "1.92"
+msrv = "1.99"
 
 allow-unwrap-in-tests = true
 type-complexity-threshold = 2000 # for our needs long types are fine

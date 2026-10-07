@@ -1,0 +1,64 @@
+--- a/src/walker.rs
++++ b/src/walker.rs
+@@ -163 +163 @@
+-    let result = walk_sequential_recursive(config, root, 0, root_dev, &mut ctx);
++    let result = walk_sequential_recursive(config, root, 0, root_dev, None, &mut ctx);
+@@ -172,0 +173 @@
++    known_type: Option<EntryType>,
+@@ -185,8 +186,12 @@
+-    let meta = match fs::symlink_metadata(path) {
+-        Ok(m) => m,
+-        Err(e) => {
+-            if !config.ignore_readdir_race {
+-                eprintln!("find: `{}`: {e}", path.display());
+-            }
+-            return Ok(());
+-        }
++    let meta = if known_type.is_none() || root_dev.is_some() {
++        match fs::symlink_metadata(path) {
++            Ok(m) => Some(m),
++            Err(e) => {
++                if !config.ignore_readdir_race {
++                    eprintln!("find: `{}`: {e}", path.display());
++                }
++                return Ok(());
++            }
++        }
++    } else {
++        None
+@@ -194,2 +198,0 @@
+-
+-    // xdev check
+@@ -199 +202 @@
+-        if meta.dev() != dev {
++        if meta.as_ref().unwrap().dev() != dev {
+@@ -203,3 +206,2 @@
+-
+-    let is_dir = meta.is_dir();
+-    let file_type = entry_type_from_metadata(&meta);
++    let file_type = known_type.unwrap_or_else(|| entry_type_from_metadata(meta.as_ref().unwrap()));
++    let is_dir = matches!(file_type, EntryType::Directory);
+@@ -215 +217,7 @@
+-                    walk_sequential_recursive(config, &entry.path(), depth + 1, root_dev, ctx)?;
++                    let known_type = entry.file_type().ok().and_then(|ft| {
++                        if ft.is_file() { Some(EntryType::File) }
++                        else if ft.is_dir() { Some(EntryType::Directory) }
++                        else if ft.is_symlink() { Some(EntryType::Symlink) }
++                        else { None }
++                    });
++                    walk_sequential_recursive(config, &entry.path(), depth + 1, root_dev, known_type, ctx)?;
+@@ -225 +233 @@
+-                metadata: Some(meta),
++                metadata: meta,
+@@ -241 +249 @@
+-                metadata: Some(meta),
++                metadata: meta,
+@@ -259 +267,7 @@
+-                    walk_sequential_recursive(config, &entry.path(), depth + 1, root_dev, ctx)?;
++                    let known_type = entry.file_type().ok().and_then(|ft| {
++                        if ft.is_file() { Some(EntryType::File) }
++                        else if ft.is_dir() { Some(EntryType::Directory) }
++                        else if ft.is_symlink() { Some(EntryType::Symlink) }
++                        else { None }
++                    });
++                    walk_sequential_recursive(config, &entry.path(), depth + 1, root_dev, known_type, ctx)?;

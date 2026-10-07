@@ -1,0 +1,3314 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1030" onload="init(evt)" viewBox="0 0 1200 1030" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="1030.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >fastfind: printf (user CPU)</text>
+<text id="details" x="10.00" y="1013" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="1013" > </text>
+<g id="frames">
+<g >
+<title>find (902,708,100 nanoseconds, 98.36%)</title><rect x="10.0" y="965" width="1160.7" height="15.0" fill="rgb(248,177,48)" rx="2" ry="2" />
+<text  x="13.00" y="975.5" >find</text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="316.9" y="757" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="319.93" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (14,042,126 nanoseconds, 1.53%)</title><rect x="433.0" y="789" width="18.0" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="435.99" y="799.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::waker::SyncWaker&gt;::notify (1,003,009 nanoseconds, 0.11%)</title><rect x="34.5" y="661" width="1.3" height="15.0" fill="rgb(243,210,42)" rx="2" ry="2" />
+<text  x="37.50" y="671.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (20,060,180 nanoseconds, 2.19%)</title><rect x="819.9" y="693" width="25.8" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="822.88" y="703.5" >r..</text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="706.4" y="693" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="709.39" y="703.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="485" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1191.71" y="495.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="654.8" y="725" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="657.81" y="735.5" ></text>
+</g>
+<g >
+<title>[python3.11] (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="677" width="9.1" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="749.0" y="613" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="751.95" y="623.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="437" width="1.3" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1190.42" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1170.7" y="821" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1173.66" y="831.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (99,297,891 nanoseconds, 10.82%)</title><rect x="75.8" y="805" width="127.6" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="78.77" y="815.5" >&lt;&amp;rayon::iter::p..</text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (1,003,009 nanoseconds, 0.11%)</title><rect x="656.1" y="741" width="1.3" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="659.10" y="751.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="693" width="1.2" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1186.55" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (5,015,045 nanoseconds, 0.55%)</title><rect x="443.3" y="773" width="6.5" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="446.31" y="783.5" ></text>
+</g>
+<g >
+<title>__close_nocancel (1,003,009 nanoseconds, 0.11%)</title><rect x="653.5" y="725" width="1.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="656.52" y="735.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="52.6" y="629" width="1.2" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="55.56" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (37,111,333 nanoseconds, 4.04%)</title><rect x="870.2" y="757" width="47.7" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="873.17" y="767.5" >[lib..</text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (5,015,045 nanoseconds, 0.55%)</title><rect x="595.5" y="805" width="6.4" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="598.49" y="815.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="549" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1190.42" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (18,054,162 nanoseconds, 1.97%)</title><rect x="764.4" y="677" width="23.2" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="767.43" y="687.5" >&lt;..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="565" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="575.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::fs::unix::DirStream as core::ops::drop::Drop&gt;::drop (1,003,009 nanoseconds, 0.11%)</title><rect x="693.5" y="709" width="1.3" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="696.50" y="719.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (7,021,063 nanoseconds, 0.77%)</title><rect x="710.3" y="725" width="9.0" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="713.26" y="735.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="745.1" y="661" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="748.08" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (12,036,108 nanoseconds, 1.31%)</title><rect x="377.5" y="757" width="15.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="380.54" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="661.3" y="709" width="2.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="664.26" y="719.5" ></text>
+</g>
+<g >
+<title>__close_nocancel (2,006,018 nanoseconds, 0.22%)</title><rect x="738.6" y="661" width="2.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="741.63" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="44.8" y="597" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="47.82" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (20,060,180 nanoseconds, 2.19%)</title><rect x="666.4" y="741" width="25.8" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="669.42" y="751.5" >&lt;..</text>
+</g>
+<g >
+<title>realloc (1,003,009 nanoseconds, 0.11%)</title><rect x="699.9" y="645" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="702.95" y="655.5" ></text>
+</g>
+<g >
+<title>opendir (30,090,270 nanoseconds, 3.28%)</title><rect x="533.6" y="773" width="38.7" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="536.58" y="783.5" >ope..</text>
+</g>
+<g >
+<title>[python3.11] (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="581" width="9.1" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="591.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="661" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (3,009,027 nanoseconds, 0.33%)</title><rect x="857.3" y="789" width="3.8" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="860.28" y="799.5" ></text>
+</g>
+<g >
+<title>realloc (1,003,009 nanoseconds, 0.11%)</title><rect x="719.3" y="677" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="722.29" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="597" width="1.3" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="846.09" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (20,060,180 nanoseconds, 2.19%)</title><rect x="819.9" y="661" width="25.8" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="822.88" y="671.5" >&lt;..</text>
+</g>
+<g >
+<title>_PyCodec_Lookup (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="789" width="1.3" height="15.0" fill="rgb(236,171,34)" rx="2" ry="2" />
+<text  x="1191.71" y="799.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="309" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1182.68" y="319.5" ></text>
+</g>
+<g >
+<title>__open64_nocancel (29,087,261 nanoseconds, 3.17%)</title><rect x="534.9" y="741" width="37.4" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="537.87" y="751.5" >__o..</text>
+</g>
+<g >
+<title>&lt;jwalk::core::read_dir_iter::ReadDirIter&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="837" width="64.5" height="15.0" fill="rgb(247,159,46)" rx="2" ry="2" />
+<text  x="14.29" y="847.5" >&lt;jwalk:..</text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="657.4" y="741" width="2.6" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="660.39" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (10,030,090 nanoseconds, 1.09%)</title><rect x="292.4" y="773" width="12.9" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="295.43" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (4,012,036 nanoseconds, 0.44%)</title><rect x="835.4" y="629" width="5.1" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="838.36" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (2,006,018 nanoseconds, 0.22%)</title><rect x="836.6" y="613" width="2.6" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="839.64" y="623.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="325" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1191.71" y="335.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="421" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1190.42" y="431.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (3,009,027 nanoseconds, 0.33%)</title><rect x="661.3" y="757" width="3.8" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="664.26" y="767.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="469" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="479.5" ></text>
+</g>
+<g >
+<title>[python3.11] (3,009,027 nanoseconds, 0.33%)</title><rect x="1186.1" y="869" width="3.9" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1189.13" y="879.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (3,009,027 nanoseconds, 0.33%)</title><rect x="247.3" y="725" width="3.9" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="250.29" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="37.1" y="597" width="1.3" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="40.08" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;rayon_core::registry::DefaultSpawn as rayon_core::registry::ThreadSpawn&gt;::spawn::{closure#0},  (649,949,832 nanoseconds, 70.82%)</title><rect x="10.0" y="901" width="835.7" height="15.0" fill="rgb(248,179,47)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" >&lt;std::thread::lifecycle::spawn_unchecked&lt;&lt;rayon_core::registry::DefaultSpawn as rayon_core::registry::ThreadSpawn&gt;::..</text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;core::result::Result&lt;jwalk::core::read_dir::ReadDir&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="1159.0" y="805" width="1.3" height="15.0" fill="rgb(244,210,43)" rx="2" ry="2" />
+<text  x="1162.05" y="815.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="693.5" y="661" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="696.50" y="671.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_acq_rel (18,054,162 nanoseconds, 1.97%)</title><rect x="605.8" y="805" width="23.2" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="608.80" y="815.5" >_..</text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="565" width="1.3" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1190.42" y="575.5" ></text>
+</g>
+<g >
+<title>fastfind::eval::eval_printf_to (33,099,297 nanoseconds, 3.61%)</title><rect x="1036.5" y="789" width="42.6" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="1039.54" y="799.5" >fast..</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="629" width="1.2" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1186.55" y="639.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="517" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1191.71" y="527.5" ></text>
+</g>
+<g >
+<title>__aarch64_cas4_acq (2,006,018 nanoseconds, 0.22%)</title><rect x="601.9" y="805" width="2.6" height="15.0" fill="rgb(249,151,48)" rx="2" ry="2" />
+<text  x="604.93" y="815.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="52.6" y="645" width="1.2" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="55.56" y="655.5" ></text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="705.1" y="709" width="2.6" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="708.10" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (29,087,261 nanoseconds, 3.17%)</title><rect x="880.5" y="725" width="37.4" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="883.49" y="735.5" >[li..</text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="592.9" y="773" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="595.91" y="783.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="277" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1181.39" y="287.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::sync::Arc&lt;std::sys::fs::unix::InnerReadDir&gt;&gt;::drop_slow (30,090,270 nanoseconds, 3.28%)</title><rect x="251.2" y="789" width="38.6" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="254.16" y="799.5" >&lt;al..</text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="709" width="9.1" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1177.52" y="719.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="773" width="64.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="14.29" y="783.5" >rayon_c..</text>
+</g>
+<g >
+<title>[python3.11] (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="533" width="9.1" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="543.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (20,060,180 nanoseconds, 2.19%)</title><rect x="819.9" y="677" width="25.8" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="822.88" y="687.5" >r..</text>
+</g>
+<g >
+<title>fstatat64 (5,015,045 nanoseconds, 0.55%)</title><rect x="53.8" y="613" width="6.5" height="15.0" fill="rgb(234,163,32)" rx="2" ry="2" />
+<text  x="56.85" y="623.5" ></text>
+</g>
+<g >
+<title>PyObject_CallFunctionObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="149" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1181.39" y="159.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (10,030,090 nanoseconds, 1.09%)</title><rect x="694.8" y="725" width="12.9" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="697.79" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="747.7" y="693" width="1.3" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="750.66" y="703.5" ></text>
+</g>
+<g >
+<title>cfree (2,006,018 nanoseconds, 0.22%)</title><rect x="701.2" y="709" width="2.6" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="704.23" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::core::index_path::IndexPath&gt;::adding (1,003,009 nanoseconds, 0.11%)</title><rect x="719.3" y="741" width="1.3" height="15.0" fill="rgb(243,159,42)" rx="2" ry="2" />
+<text  x="722.29" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1186.1" y="789" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1189.13" y="799.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="629" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="759.69" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="47.4" y="613" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="50.40" y="623.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="597" width="1.3" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1190.42" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="719.3" y="693" width="1.3" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="722.29" y="703.5" ></text>
+</g>
+<g >
+<title>malloc (31,093,279 nanoseconds, 3.39%)</title><rect x="489.7" y="757" width="40.0" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="492.74" y="767.5" >mal..</text>
+</g>
+<g >
+<title>[libc.so.6] (4,012,036 nanoseconds, 0.44%)</title><rect x="524.6" y="725" width="5.1" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="527.56" y="735.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="501" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1190.42" y="511.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="277" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1182.68" y="287.5" ></text>
+</g>
+<g >
+<title>__aarch64_cas8_acq_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="604.5" y="805" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="607.51" y="815.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="405" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="415.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_rel (2,006,018 nanoseconds, 0.22%)</title><rect x="351.7" y="773" width="2.6" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="354.75" y="783.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_acq_rel (5,015,045 nanoseconds, 0.55%)</title><rect x="809.6" y="677" width="6.4" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="812.56" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="758.0" y="709" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="760.98" y="719.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="645" width="1.3" height="15.0" fill="rgb(230,207,28)" rx="2" ry="2" />
+<text  x="1190.42" y="655.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="638.0" y="789" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="641.04" y="799.5" ></text>
+</g>
+<g >
+<title>&lt;core::slice::iter::Iter&lt;fastfind::expr::FileType&gt; as core::iter::traits::iterator::Iterator&gt;::any::&lt;fastfind::eval::evaluate::{closure#0}&gt; (2,006,018 nanoseconds, 0.22%)</title><rect x="1032.7" y="789" width="2.5" height="15.0" fill="rgb(247,220,46)" rx="2" ry="2" />
+<text  x="1035.67" y="799.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="743.8" y="677" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="746.79" y="687.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="469" width="1.3" height="15.0" fill="rgb(230,207,28)" rx="2" ry="2" />
+<text  x="1183.97" y="479.5" ></text>
+</g>
+<g >
+<title>readdir64 (2,006,018 nanoseconds, 0.22%)</title><rect x="795.4" y="613" width="2.6" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="798.38" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (25,075,225 nanoseconds, 2.73%)</title><rect x="35.8" y="661" width="32.2" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="38.79" y="671.5" >&lt;j..</text>
+</g>
+<g >
+<title>&lt;std::sys::thread::unix::Thread&gt;::new::thread_start (649,949,832 nanoseconds, 70.82%)</title><rect x="10.0" y="917" width="835.7" height="15.0" fill="rgb(239,179,37)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" >&lt;std::sys::thread::unix::Thread&gt;::new::thread_start</text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="705.1" y="677" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="708.10" y="687.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1174.5" y="485" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="495.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="229" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="239.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="314.3" y="741" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="317.35" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="629" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="639.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (11,033,099 nanoseconds, 1.20%)</title><rect x="53.8" y="645" width="14.2" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="56.85" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="532.3" y="741" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="535.30" y="751.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (3,009,027 nanoseconds, 0.33%)</title><rect x="460.1" y="757" width="3.8" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="463.08" y="767.5" ></text>
+</g>
+<g >
+<title>realloc (43,129,387 nanoseconds, 4.70%)</title><rect x="870.2" y="773" width="55.4" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="873.17" y="783.5" >realloc</text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="531.0" y="773" width="2.6" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="534.01" y="783.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="597" width="9.1" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1177.52" y="607.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="660.0" y="757" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="662.97" y="767.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="789" width="64.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="14.29" y="799.5" >rayon::..</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="389" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1191.71" y="399.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (261,785,349 nanoseconds, 28.52%)</title><rect x="242.1" y="805" width="336.6" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="245.13" y="815.5" >&lt;jwalk::WalkDirGeneric&lt;</text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="245" width="1.3" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1182.68" y="255.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (3,009,027 nanoseconds, 0.33%)</title><rect x="752.8" y="677" width="3.9" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="755.82" y="687.5" ></text>
+</g>
+<g >
+<title>opendir (2,006,018 nanoseconds, 0.22%)</title><rect x="750.2" y="661" width="2.6" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="753.24" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="581" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="591.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="71.9" y="645" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="74.90" y="655.5" ></text>
+</g>
+<g >
+<title>cfree (8,024,072 nanoseconds, 0.87%)</title><rect x="1014.6" y="789" width="10.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="1017.61" y="799.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="791.5" y="597" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="794.51" y="607.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="706.4" y="677" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="709.39" y="687.5" ></text>
+</g>
+<g >
+<title>Py_BytesMain (15,045,135 nanoseconds, 1.64%)</title><rect x="1170.7" y="901" width="19.3" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1173.66" y="911.5" ></text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="663.8" y="741" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="666.84" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="501" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="511.5" ></text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="745.1" y="677" width="2.6" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="748.08" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="60.3" y="565" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="63.30" y="575.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="293" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1182.68" y="303.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="712.8" y="677" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="715.84" y="687.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="597" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (44,132,396 nanoseconds, 4.81%)</title><rect x="111.9" y="789" width="56.7" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="114.88" y="799.5" >&lt;alloc..</text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::waker::SyncWaker&gt;::notify (1,003,009 nanoseconds, 0.11%)</title><rect x="31.9" y="645" width="1.3" height="15.0" fill="rgb(243,210,42)" rx="2" ry="2" />
+<text  x="34.92" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (2,006,018 nanoseconds, 0.22%)</title><rect x="697.4" y="709" width="2.5" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="700.37" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="705.1" y="693" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="708.10" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::fs::unix::DirStream as core::ops::drop::Drop&gt;::drop (2,006,018 nanoseconds, 0.22%)</title><rect x="792.8" y="645" width="2.6" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="795.80" y="655.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_rel (2,006,018 nanoseconds, 0.22%)</title><rect x="707.7" y="725" width="2.6" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="710.68" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_deque::deque::Stealer&lt;rayon_core::job::JobRef&gt;&gt;::steal (1,003,009 nanoseconds, 0.11%)</title><rect x="10.0" y="853" width="1.3" height="15.0" fill="rgb(227,210,24)" rx="2" ry="2" />
+<text  x="13.00" y="863.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="533" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="543.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (3,009,027 nanoseconds, 0.33%)</title><rect x="68.0" y="581" width="3.9" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="71.03" y="591.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,003,009 nanoseconds, 0.11%)</title><rect x="1177.1" y="261" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1180.10" y="271.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="13.9" y="693" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="16.87" y="703.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="437" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="1186.55" y="447.5" ></text>
+</g>
+<g >
+<title>realloc (1,003,009 nanoseconds, 0.11%)</title><rect x="37.1" y="581" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="40.08" y="591.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="693" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="703.5" ></text>
+</g>
+<g >
+<title>_start (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="949" width="325.0" height="15.0" fill="rgb(239,139,37)" rx="2" ry="2" />
+<text  x="848.67" y="959.5" >_start</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="757" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="767.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="803.1" y="661" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="806.11" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="37.1" y="549" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="40.08" y="559.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="749.0" y="645" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="751.95" y="655.5" ></text>
+</g>
+<g >
+<title>cfree (10,030,090 nanoseconds, 1.09%)</title><rect x="964.3" y="805" width="12.9" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="967.32" y="815.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="485" width="1.3" height="15.0" fill="rgb(230,207,28)" rx="2" ry="2" />
+<text  x="1190.42" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (14,042,126 nanoseconds, 1.53%)</title><rect x="738.6" y="709" width="18.1" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="741.63" y="719.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="613" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1191.71" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;std::path::Path&gt;::_join (1,003,009 nanoseconds, 0.11%)</title><rect x="699.9" y="709" width="1.3" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="702.95" y="719.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1186.1" y="773" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1189.13" y="783.5" ></text>
+</g>
+<g >
+<title>__libc_calloc (1,003,009 nanoseconds, 0.11%)</title><rect x="239.6" y="789" width="1.2" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="242.55" y="799.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="11.3" y="693" width="2.6" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="14.29" y="703.5" ></text>
+</g>
+<g >
+<title>malloc (14,042,126 nanoseconds, 1.53%)</title><rect x="414.9" y="757" width="18.1" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="417.94" y="767.5" ></text>
+</g>
+<g >
+<title>fstatat64 (1,003,009 nanoseconds, 0.11%)</title><rect x="804.4" y="629" width="1.3" height="15.0" fill="rgb(234,163,32)" rx="2" ry="2" />
+<text  x="807.40" y="639.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (6,018,054 nanoseconds, 0.66%)</title><rect x="1175.8" y="485" width="7.8" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1178.81" y="495.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::sync::Arc&lt;std::sys::fs::unix::InnerReadDir&gt;&gt;::drop_slow (1,003,009 nanoseconds, 0.11%)</title><rect x="834.1" y="629" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="837.07" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (649,949,832 nanoseconds, 70.82%)</title><rect x="10.0" y="933" width="835.7" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>free@plt (1,003,009 nanoseconds, 0.11%)</title><rect x="1168.1" y="821" width="1.3" height="15.0" fill="rgb(231,177,29)" rx="2" ry="2" />
+<text  x="1171.08" y="831.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="249.9" y="693" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="252.87" y="703.5" ></text>
+</g>
+<g >
+<title>realloc (6,018,054 nanoseconds, 0.66%)</title><rect x="341.4" y="725" width="7.8" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="344.43" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (18,054,162 nanoseconds, 1.97%)</title><rect x="643.2" y="789" width="23.2" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="646.20" y="799.5" >&lt;..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (8,024,072 nanoseconds, 0.87%)</title><rect x="671.6" y="725" width="10.3" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="674.57" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (2,006,018 nanoseconds, 0.22%)</title><rect x="790.2" y="661" width="2.6" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="793.22" y="671.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="469" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1191.71" y="479.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="594.2" y="789" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="597.20" y="799.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1175.8" y="277" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1178.81" y="287.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Sender&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (25,075,225 nanoseconds, 2.73%)</title><rect x="208.6" y="805" width="32.2" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="211.60" y="815.5" >&lt;c..</text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="60.3" y="597" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="63.30" y="607.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (63,189,567 nanoseconds, 6.89%)</title><rect x="764.4" y="725" width="81.3" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="767.43" y="735.5" >rayon_cor..</text>
+</g>
+<g >
+<title>PyImport_Import (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="741" width="1.3" height="15.0" fill="rgb(238,226,36)" rx="2" ry="2" />
+<text  x="1191.71" y="751.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (90,270,810 nanoseconds, 9.84%)</title><rect x="729.6" y="757" width="116.1" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="732.61" y="767.5" >rayon_core::jo..</text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="597" width="1.2" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1186.55" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="699.9" y="677" width="1.3" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="702.95" y="687.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModule (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="757" width="1.3" height="15.0" fill="rgb(237,226,35)" rx="2" ry="2" />
+<text  x="1191.71" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="1072.6" y="725" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="1075.64" y="735.5" ></text>
+</g>
+<g >
+<title>PyDict_SetItemString (1,003,009 nanoseconds, 0.11%)</title><rect x="1186.1" y="805" width="1.3" height="15.0" fill="rgb(243,204,42)" rx="2" ry="2" />
+<text  x="1189.13" y="815.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="202.2" y="789" width="1.2" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="205.15" y="799.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="229" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1182.68" y="239.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="715.4" y="661" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="718.42" y="671.5" ></text>
+</g>
+<g >
+<title>__close_nocancel (26,078,234 nanoseconds, 2.84%)</title><rect x="252.4" y="757" width="33.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="255.45" y="767.5" >__..</text>
+</g>
+<g >
+<title>&lt;std::sys::fs::unix::DirStream as core::ops::drop::Drop&gt;::drop (1,003,009 nanoseconds, 0.11%)</title><rect x="834.1" y="613" width="1.3" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="837.07" y="623.5" ></text>
+</g>
+<g >
+<title>PyObject_Call (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="213" width="1.3" height="15.0" fill="rgb(230,207,28)" rx="2" ry="2" />
+<text  x="1181.39" y="223.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1175.8" y="293" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1178.81" y="303.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="828.9" y="629" width="1.3" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="831.91" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (3,009,027 nanoseconds, 0.33%)</title><rect x="204.7" y="789" width="3.9" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="207.73" y="799.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="917.9" y="741" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="920.89" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVec&lt;usize&gt;&gt;::grow_one (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="629" width="1.3" height="15.0" fill="rgb(251,184,50)" rx="2" ry="2" />
+<text  x="846.09" y="639.5" ></text>
+</g>
+<g >
+<title>readdir64 (1,003,009 nanoseconds, 0.11%)</title><rect x="335.0" y="741" width="1.3" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="337.98" y="751.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="549" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1191.71" y="559.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="629" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1191.71" y="639.5" ></text>
+</g>
+<g >
+<title>[python3.11] (3,009,027 nanoseconds, 0.33%)</title><rect x="1186.1" y="821" width="3.9" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1189.13" y="831.5" ></text>
+</g>
+<g >
+<title>realloc (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="645" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="759.69" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (7,021,063 nanoseconds, 0.77%)</title><rect x="340.1" y="741" width="9.1" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="343.14" y="751.5" ></text>
+</g>
+<g >
+<title>closedir (1,003,009 nanoseconds, 0.11%)</title><rect x="693.5" y="693" width="1.3" height="15.0" fill="rgb(238,102,37)" rx="2" ry="2" />
+<text  x="696.50" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVec&lt;usize&gt;&gt;::grow_one (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="693" width="1.3" height="15.0" fill="rgb(251,184,50)" rx="2" ry="2" />
+<text  x="759.69" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::waker::SyncWaker&gt;::notify (1,003,009 nanoseconds, 0.11%)</title><rect x="240.8" y="805" width="1.3" height="15.0" fill="rgb(243,210,42)" rx="2" ry="2" />
+<text  x="243.84" y="815.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (1,003,009 nanoseconds, 0.11%)</title><rect x="1075.2" y="741" width="1.3" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="1078.22" y="751.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="532.3" y="757" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="535.30" y="767.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (598,796,373 nanoseconds, 65.25%)</title><rect x="75.8" y="837" width="769.9" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="78.77" y="847.5" >rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="373" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1183.97" y="383.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="229" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1181.39" y="239.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="757" width="1.2" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1186.55" y="767.5" ></text>
+</g>
+<g >
+<title>readdir64 (1,003,009 nanoseconds, 0.11%)</title><rect x="837.9" y="597" width="1.3" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="840.93" y="607.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="709" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1190.42" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;core::bstr::ByteStr as core::fmt::Display&gt;::fmt (22,066,198 nanoseconds, 2.40%)</title><rect x="1044.3" y="741" width="28.3" height="15.0" fill="rgb(229,220,26)" rx="2" ry="2" />
+<text  x="1047.27" y="751.5" >&lt;c..</text>
+</g>
+<g >
+<title>_PyObject_GC_NewVar (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="645" width="1.3" height="15.0" fill="rgb(236,171,34)" rx="2" ry="2" />
+<text  x="1187.84" y="655.5" ></text>
+</g>
+<g >
+<title>[python3.11] (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="725" width="9.1" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="735.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="47.4" y="581" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="50.40" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::sync::Arc&lt;std::sys::fs::unix::InnerReadDir&gt;&gt;::drop_slow (2,006,018 nanoseconds, 0.22%)</title><rect x="653.5" y="757" width="2.6" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="656.52" y="767.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (3,009,027 nanoseconds, 0.33%)</title><rect x="1175.8" y="341" width="3.9" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1178.81" y="351.5" ></text>
+</g>
+<g >
+<title>jwalk::process_dir_entry_result::&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="800.5" y="645" width="1.3" height="15.0" fill="rgb(244,133,43)" rx="2" ry="2" />
+<text  x="803.54" y="655.5" ></text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="805.7" y="645" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="808.69" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="338.9" y="725" width="1.2" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="341.85" y="735.5" ></text>
+</g>
+<g >
+<title>[python3.11] (4,012,036 nanoseconds, 0.44%)</title><rect x="1175.8" y="389" width="5.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1178.81" y="399.5" ></text>
+</g>
+<g >
+<title>opendir (2,006,018 nanoseconds, 0.22%)</title><rect x="750.2" y="677" width="2.6" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="753.24" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (5,015,045 nanoseconds, 0.55%)</title><rect x="168.6" y="789" width="6.5" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="171.62" y="799.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;jwalk::core::dir_entry::DirEntry&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="1024.9" y="805" width="2.6" height="15.0" fill="rgb(250,133,50)" rx="2" ry="2" />
+<text  x="1027.93" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="645.8" y="757" width="2.6" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="648.78" y="767.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="62.9" y="629" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="65.87" y="639.5" ></text>
+</g>
+<g >
+<title>fastfind::eval::evaluate (2,006,018 nanoseconds, 0.22%)</title><rect x="1165.5" y="805" width="2.6" height="15.0" fill="rgb(245,146,45)" rx="2" ry="2" />
+<text  x="1168.50" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (6,018,054 nanoseconds, 0.66%)</title><rect x="643.2" y="773" width="7.7" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="646.20" y="783.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (1,003,009 nanoseconds, 0.11%)</title><rect x="718.0" y="709" width="1.3" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="721.00" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (2,006,018 nanoseconds, 0.22%)</title><rect x="790.2" y="645" width="2.6" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="793.22" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="742.5" y="645" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="745.50" y="655.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="749.0" y="661" width="1.2" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="751.95" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::sync::Arc&lt;std::sys::fs::unix::InnerReadDir&gt;&gt;::drop_slow (2,006,018 nanoseconds, 0.22%)</title><rect x="738.6" y="693" width="2.6" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="741.63" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (2,006,018 nanoseconds, 0.22%)</title><rect x="28.1" y="645" width="2.5" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="31.05" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (1,003,009 nanoseconds, 0.11%)</title><rect x="296.3" y="757" width="1.3" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="299.30" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="350.5" y="773" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="353.46" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVec&lt;usize&gt;&gt;::grow_one (1,003,009 nanoseconds, 0.11%)</title><rect x="719.3" y="725" width="1.3" height="15.0" fill="rgb(251,184,50)" rx="2" ry="2" />
+<text  x="722.29" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (2,006,018 nanoseconds, 0.22%)</title><rect x="596.8" y="789" width="2.6" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="599.78" y="799.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="677" width="1.3" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1191.71" y="687.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldset8_rel (2,006,018 nanoseconds, 0.22%)</title><rect x="73.2" y="661" width="2.6" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="76.19" y="671.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (63,189,567 nanoseconds, 6.89%)</title><rect x="764.4" y="709" width="81.3" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="767.43" y="719.5" >rayon::it..</text>
+</g>
+<g >
+<title>malloc (23,069,207 nanoseconds, 2.51%)</title><rect x="403.3" y="773" width="29.7" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="406.33" y="783.5" >ma..</text>
+</g>
+<g >
+<title>[python3.11] (2,006,018 nanoseconds, 0.22%)</title><rect x="1171.9" y="805" width="2.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1174.95" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (1,003,009 nanoseconds, 0.11%)</title><rect x="37.1" y="613" width="1.3" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="40.08" y="623.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="549" width="9.1" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1177.52" y="559.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::core::index_path::IndexPath&gt;::adding (13,039,117 nanoseconds, 1.42%)</title><rect x="578.7" y="805" width="16.8" height="15.0" fill="rgb(243,159,42)" rx="2" ry="2" />
+<text  x="581.72" y="815.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="933" width="325.0" height="15.0" fill="rgb(247,154,46)" rx="2" ry="2" />
+<text  x="848.67" y="943.5" >__libc_start_main</text>
+</g>
+<g >
+<title>__aarch64_ldset8_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="238.3" y="789" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="241.26" y="799.5" ></text>
+</g>
+<g >
+<title>&lt;core::bstr::ByteStr as core::fmt::Display&gt;::fmt (1,003,009 nanoseconds, 0.11%)</title><rect x="1075.2" y="725" width="1.3" height="15.0" fill="rgb(229,220,26)" rx="2" ry="2" />
+<text  x="1078.22" y="735.5" ></text>
+</g>
+<g >
+<title>_PyObject_FastCallDictTstate (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="661" width="1.2" height="15.0" fill="rgb(245,171,45)" rx="2" ry="2" />
+<text  x="1186.55" y="671.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="702.5" y="693" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="705.52" y="703.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="357" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1191.71" y="367.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (2,006,018 nanoseconds, 0.22%)</title><rect x="741.2" y="677" width="2.6" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="744.21" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (7,021,063 nanoseconds, 0.77%)</title><rect x="1015.9" y="773" width="9.0" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="1018.90" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Sender&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (22,066,198 nanoseconds, 2.40%)</title><rect x="208.6" y="789" width="28.4" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="211.60" y="799.5" >&lt;c..</text>
+</g>
+<g >
+<title>[libc.so.6] (8,024,072 nanoseconds, 0.87%)</title><rect x="404.6" y="757" width="10.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="407.62" y="767.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="805" width="64.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="14.29" y="815.5" >rayon_c..</text>
+</g>
+<g >
+<title>cfree (3,009,027 nanoseconds, 0.33%)</title><rect x="286.0" y="741" width="3.8" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="288.98" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;core::io::write::default_write_fmt::Adapter&lt;alloc::io::buffered::bufwriter::BufWriter&lt;std::io::stdio::StdoutLock&gt;&gt; as core::fmt::Write&gt;::write_str (2,006,018 nanoseconds, 0.22%)</title><rect x="1072.6" y="741" width="2.6" height="15.0" fill="rgb(236,220,34)" rx="2" ry="2" />
+<text  x="1075.64" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::fs::unix::DirStream as core::ops::drop::Drop&gt;::drop (30,090,270 nanoseconds, 3.28%)</title><rect x="251.2" y="773" width="38.6" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="254.16" y="783.5" >&lt;st..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="613" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="623.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="293" width="1.3" height="15.0" fill="rgb(230,207,28)" rx="2" ry="2" />
+<text  x="1191.71" y="303.5" ></text>
+</g>
+<g >
+<title> std::process::ExitCode, std::process::ExitCode&gt; (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="869" width="325.0" height="15.0" fill="rgb(238,163,36)" rx="2" ry="2" />
+<text  x="848.67" y="879.5" > std::process::ExitCode, std::process::Exit..</text>
+</g>
+<g >
+<title>__aarch64_ldadd8_relax (1,003,009 nanoseconds, 0.11%)</title><rect x="839.2" y="613" width="1.3" height="15.0" fill="rgb(245,151,44)" rx="2" ry="2" />
+<text  x="842.22" y="623.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="645" width="1.2" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1186.55" y="655.5" ></text>
+</g>
+<g >
+<title>strlen@plt (1,003,009 nanoseconds, 0.11%)</title><rect x="337.6" y="757" width="1.3" height="15.0" fill="rgb(231,140,29)" rx="2" ry="2" />
+<text  x="340.56" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="50.0" y="645" width="2.6" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="52.98" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="37.1" y="533" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="40.08" y="543.5" ></text>
+</g>
+<g >
+<title>jwalk::process_dir_entry_result::&lt; (5,015,045 nanoseconds, 0.55%)</title><rect x="297.6" y="757" width="6.4" height="15.0" fill="rgb(244,133,43)" rx="2" ry="2" />
+<text  x="300.58" y="767.5" ></text>
+</g>
+<g >
+<title>cfree (3,009,027 nanoseconds, 0.33%)</title><rect x="42.2" y="629" width="3.9" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="45.24" y="639.5" ></text>
+</g>
+<g >
+<title>PyFile_OpenCodeObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1174.5" y="517" width="1.3" height="15.0" fill="rgb(241,197,39)" rx="2" ry="2" />
+<text  x="1177.52" y="527.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (43,129,387 nanoseconds, 4.70%)</title><rect x="764.4" y="693" width="55.5" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="767.43" y="703.5" >&lt;&amp;ray..</text>
+</g>
+<g >
+<title>&lt;std::path::Path&gt;::_join (2,006,018 nanoseconds, 0.22%)</title><rect x="38.4" y="613" width="2.6" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="41.37" y="623.5" ></text>
+</g>
+<g >
+<title>opendir (3,009,027 nanoseconds, 0.33%)</title><rect x="64.2" y="629" width="3.8" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="67.16" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="248.6" y="709" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="251.58" y="719.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="62.9" y="613" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="65.87" y="623.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="693.5" y="645" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="696.50" y="655.5" ></text>
+</g>
+<g >
+<title>[python3.11] (3,009,027 nanoseconds, 0.33%)</title><rect x="1186.1" y="885" width="3.9" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1189.13" y="895.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="421" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="431.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (5,015,045 nanoseconds, 0.55%)</title><rect x="572.3" y="773" width="6.4" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="575.27" y="783.5" ></text>
+</g>
+<g >
+<title>PyBytes_FromStringAndSize (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="469" width="1.2" height="15.0" fill="rgb(245,210,44)" rx="2" ry="2" />
+<text  x="1186.55" y="479.5" ></text>
+</g>
+<g >
+<title>fstatat64 (2,006,018 nanoseconds, 0.22%)</title><rect x="710.3" y="693" width="2.5" height="15.0" fill="rgb(234,163,32)" rx="2" ry="2" />
+<text  x="713.26" y="703.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldset8_rel (4,012,036 nanoseconds, 0.44%)</title><rect x="631.6" y="805" width="5.2" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="634.60" y="815.5" ></text>
+</g>
+<g >
+<title>PyGC_Collect (1,003,009 nanoseconds, 0.11%)</title><rect x="1170.7" y="853" width="1.2" height="15.0" fill="rgb(241,194,39)" rx="2" ry="2" />
+<text  x="1173.66" y="863.5" ></text>
+</g>
+<g >
+<title>[python3.11] (2,006,018 nanoseconds, 0.22%)</title><rect x="1171.9" y="821" width="2.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1174.95" y="831.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="661.3" y="693" width="2.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="664.26" y="703.5" ></text>
+</g>
+<g >
+<title>_PyObject_GenericGetAttrWithDict (1,003,009 nanoseconds, 0.11%)</title><rect x="1174.5" y="421" width="1.3" height="15.0" fill="rgb(238,171,36)" rx="2" ry="2" />
+<text  x="1177.52" y="431.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="613" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="759.69" y="623.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="741" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1186.55" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="789" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="799.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="661" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1191.71" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="709" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (25,075,225 nanoseconds, 2.73%)</title><rect x="491.0" y="741" width="32.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="494.03" y="751.5" >[l..</text>
+</g>
+<g >
+<title>opendir (3,009,027 nanoseconds, 0.33%)</title><rect x="64.2" y="613" width="3.8" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="67.16" y="623.5" ></text>
+</g>
+<g >
+<title>fastfind::walker::walk_parallel::&lt;alloc::io::buffered::bufwriter::BufWriter&lt;std::io::stdio::StdoutLock&gt;&gt; (64,192,576 nanoseconds, 6.99%)</title><rect x="1085.5" y="821" width="82.6" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="1088.54" y="831.5" >fastfind:..</text>
+</g>
+<g >
+<title>_PyCode_ConstantKey (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="677" width="1.3" height="15.0" fill="rgb(248,171,48)" rx="2" ry="2" />
+<text  x="1187.84" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (6,018,054 nanoseconds, 0.66%)</title><rect x="20.3" y="645" width="7.8" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="23.32" y="655.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wake_private (1,003,009 nanoseconds, 0.11%)</title><rect x="523.3" y="741" width="1.3" height="15.0" fill="rgb(245,154,45)" rx="2" ry="2" />
+<text  x="526.27" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="341" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="351.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_acq_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="665.1" y="773" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="668.13" y="783.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModule (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="805" width="1.3" height="15.0" fill="rgb(237,226,35)" rx="2" ry="2" />
+<text  x="1190.42" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;rayon_core::job::StackJob&lt;rayon_core::latch::SpinLatch, rayon_core::join::join_context::call_b&lt; (598,796,373 nanoseconds, 65.25%)</title><rect x="75.8" y="853" width="769.9" height="15.0" fill="rgb(236,206,34)" rx="2" ry="2" />
+<text  x="78.77" y="863.5" >&lt;rayon_core::job::StackJob&lt;rayon_core::latch::SpinLatch, rayon_core::join::join_context::call_b&lt;</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="197" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="207.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="661.3" y="677" width="2.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="664.26" y="687.5" ></text>
+</g>
+<g >
+<title>[python3.11] (6,018,054 nanoseconds, 0.66%)</title><rect x="1175.8" y="517" width="7.8" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1178.81" y="527.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="453" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;std::path::Path&gt;::_join (9,027,081 nanoseconds, 0.98%)</title><rect x="925.6" y="805" width="11.6" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="928.63" y="815.5" ></text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="661.3" y="725" width="2.5" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="664.26" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (111,333,999 nanoseconds, 12.13%)</title><rect x="289.8" y="789" width="143.2" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="292.85" y="799.5" >&lt;core::iter::adapt..</text>
+</g>
+<g >
+<title>cfree (19,057,171 nanoseconds, 2.08%)</title><rect x="377.5" y="773" width="24.5" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="380.54" y="783.5" >c..</text>
+</g>
+<g >
+<title>__open64_nocancel (3,009,027 nanoseconds, 0.33%)</title><rect x="64.2" y="597" width="3.8" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="67.16" y="607.5" ></text>
+</g>
+<g >
+<title>readdir64@plt (1,003,009 nanoseconds, 0.11%)</title><rect x="336.3" y="757" width="1.3" height="15.0" fill="rgb(231,184,29)" rx="2" ry="2" />
+<text  x="339.27" y="767.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="565" width="9.1" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1177.52" y="575.5" ></text>
+</g>
+<g >
+<title>PyImport_Import (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="789" width="1.3" height="15.0" fill="rgb(238,226,36)" rx="2" ry="2" />
+<text  x="1190.42" y="799.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait_private (1,003,009 nanoseconds, 0.11%)</title><rect x="48.7" y="613" width="1.3" height="15.0" fill="rgb(245,154,45)" rx="2" ry="2" />
+<text  x="51.69" y="623.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1177.1" y="229" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1180.10" y="239.5" ></text>
+</g>
+<g >
+<title>__aarch64_cas8_acq_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="237.0" y="789" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="239.97" y="799.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="304.0" y="757" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="307.03" y="767.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="661" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1190.42" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (9,027,081 nanoseconds, 0.98%)</title><rect x="653.5" y="773" width="11.6" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="656.52" y="783.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="581" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;rayon_core::job::HeapJob&lt;rayon_core::spawn::spawn_job&lt;&lt;jwalk::core::read_dir_iter::ReadDirIter&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="853" width="64.5" height="15.0" fill="rgb(247,206,46)" rx="2" ry="2" />
+<text  x="14.29" y="863.5" >&lt;rayon_..</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="629" width="9.1" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1177.52" y="639.5" ></text>
+</g>
+<g >
+<title>free@plt (1,003,009 nanoseconds, 0.11%)</title><rect x="46.1" y="629" width="1.3" height="15.0" fill="rgb(231,177,29)" rx="2" ry="2" />
+<text  x="49.11" y="639.5" ></text>
+</g>
+<g >
+<title>[python3.11] (3,009,027 nanoseconds, 0.33%)</title><rect x="1186.1" y="837" width="3.9" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1189.13" y="847.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (12,036,108 nanoseconds, 1.31%)</title><rect x="417.5" y="741" width="15.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="420.52" y="751.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (28,084,252 nanoseconds, 3.06%)</title><rect x="1040.4" y="757" width="36.1" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="1043.40" y="767.5" >cor..</text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="644.5" y="757" width="1.3" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="647.49" y="767.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="725" width="1.3" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1190.42" y="735.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1174.5" y="453" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="699.9" y="661" width="1.3" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="702.95" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="69" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="79.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (4,012,036 nanoseconds, 0.44%)</title><rect x="1175.8" y="469" width="5.2" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1178.81" y="479.5" ></text>
+</g>
+<g >
+<title>fastfind::eval::evaluate (44,132,396 nanoseconds, 4.81%)</title><rect x="1028.8" y="805" width="56.7" height="15.0" fill="rgb(245,146,45)" rx="2" ry="2" />
+<text  x="1031.80" y="815.5" >fastfi..</text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;core::result::Result&lt;jwalk::core::read_dir::ReadDir&lt; (7,021,063 nanoseconds, 0.77%)</title><rect x="845.7" y="821" width="9.0" height="15.0" fill="rgb(244,210,43)" rx="2" ry="2" />
+<text  x="848.67" y="831.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Sender&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="30.6" y="645" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="33.63" y="655.5" ></text>
+</g>
+<g >
+<title>[python3.11] (4,012,036 nanoseconds, 0.44%)</title><rect x="1175.8" y="373" width="5.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1178.81" y="383.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="804.4" y="645" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="807.40" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="937.2" y="805" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="940.23" y="815.5" ></text>
+</g>
+<g >
+<title>__lll_lock_wait_private (2,006,018 nanoseconds, 0.22%)</title><rect x="917.9" y="757" width="2.6" height="15.0" fill="rgb(245,154,45)" rx="2" ry="2" />
+<text  x="920.89" y="767.5" ></text>
+</g>
+<g >
+<title>__sched_yield (1,003,009 nanoseconds, 0.11%)</title><rect x="832.8" y="629" width="1.3" height="15.0" fill="rgb(241,132,40)" rx="2" ry="2" />
+<text  x="835.78" y="639.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_acq_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="17.7" y="693" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="20.74" y="703.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="261" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="271.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="613" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="623.5" ></text>
+</g>
+<g >
+<title>syscall (1,003,009 nanoseconds, 0.11%)</title><rect x="763.1" y="709" width="1.3" height="15.0" fill="rgb(230,167,28)" rx="2" ry="2" />
+<text  x="766.14" y="719.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (3,009,027 nanoseconds, 0.33%)</title><rect x="1175.8" y="357" width="3.9" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1178.81" y="367.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="357" width="1.3" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1182.68" y="367.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="832.8" y="645" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="835.78" y="655.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="741" width="64.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="14.29" y="751.5" >rayon_c..</text>
+</g>
+<g >
+<title>realloc (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="581" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="846.09" y="591.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="37.1" y="565" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="40.08" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="749.0" y="629" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="751.95" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="531.0" y="757" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="534.01" y="767.5" ></text>
+</g>
+<g >
+<title>syscall (2,006,018 nanoseconds, 0.22%)</title><rect x="599.4" y="789" width="2.5" height="15.0" fill="rgb(230,167,28)" rx="2" ry="2" />
+<text  x="602.36" y="799.5" ></text>
+</g>
+<g >
+<title>Py_InitializeFromConfig (3,009,027 nanoseconds, 0.33%)</title><rect x="1186.1" y="853" width="3.9" height="15.0" fill="rgb(239,194,37)" rx="2" ry="2" />
+<text  x="1189.13" y="863.5" ></text>
+</g>
+<g >
+<title>syscall (1,003,009 nanoseconds, 0.11%)</title><rect x="19.0" y="693" width="1.3" height="15.0" fill="rgb(230,167,28)" rx="2" ry="2" />
+<text  x="22.03" y="703.5" ></text>
+</g>
+<g >
+<title>realloc (2,006,018 nanoseconds, 0.22%)</title><rect x="590.3" y="725" width="2.6" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="593.33" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::sync::Arc&lt;std::sys::fs::unix::InnerReadDir&gt;&gt;::drop_slow (2,006,018 nanoseconds, 0.22%)</title><rect x="792.8" y="661" width="2.6" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="795.80" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="325" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1182.68" y="335.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="60.3" y="581" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="63.30" y="591.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="245" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1191.71" y="255.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (5,015,045 nanoseconds, 0.55%)</title><rect x="710.3" y="709" width="6.4" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="713.26" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::core::index_path::IndexPath&gt;::adding (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="709" width="1.3" height="15.0" fill="rgb(243,159,42)" rx="2" ry="2" />
+<text  x="759.69" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (4,012,036 nanoseconds, 0.44%)</title><rect x="344.0" y="677" width="5.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="347.01" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (21,063,189 nanoseconds, 2.30%)</title><rect x="496.2" y="709" width="27.1" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="499.19" y="719.5" >[..</text>
+</g>
+<g >
+<title>__aarch64_ldadd8_relax (18,054,162 nanoseconds, 1.97%)</title><rect x="354.3" y="773" width="23.2" height="15.0" fill="rgb(245,151,44)" rx="2" ry="2" />
+<text  x="357.33" y="783.5" >_..</text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="657.4" y="725" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="660.39" y="735.5" ></text>
+</g>
+<g >
+<title>[python3.11] (8,024,072 nanoseconds, 0.87%)</title><rect x="1174.5" y="805" width="10.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="815.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="702.5" y="677" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="705.52" y="687.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (90,270,810 nanoseconds, 9.84%)</title><rect x="729.6" y="741" width="116.1" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="732.61" y="751.5" >rayon::iter::p..</text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (2,006,018 nanoseconds, 0.22%)</title><rect x="804.4" y="661" width="2.6" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="807.40" y="671.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="453" width="1.2" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="1186.55" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::sync::Arc&lt;std::path::Path&gt;&gt;::drop_slow (1,003,009 nanoseconds, 0.11%)</title><rect x="1024.9" y="789" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="1027.93" y="799.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="277" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="287.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (139,418,251 nanoseconds, 15.19%)</title><rect x="666.4" y="789" width="179.3" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="669.42" y="799.5" >rayon_core::join::join_..</text>
+</g>
+<g >
+<title>__aarch64_cas8_acq_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="13.9" y="677" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="16.87" y="687.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (8,024,072 nanoseconds, 0.87%)</title><rect x="1174.5" y="789" width="10.3" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1177.52" y="799.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="917" width="325.0" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="848.67" y="927.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Sender&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (3,009,027 nanoseconds, 0.33%)</title><rect x="30.6" y="661" width="3.9" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="33.63" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="629" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="639.5" ></text>
+</g>
+<g >
+<title>__libc_calloc (1,003,009 nanoseconds, 0.11%)</title><rect x="636.8" y="805" width="1.2" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="639.75" y="815.5" ></text>
+</g>
+<g >
+<title>__libc_start_main (15,045,135 nanoseconds, 1.64%)</title><rect x="1170.7" y="933" width="19.3" height="15.0" fill="rgb(247,154,46)" rx="2" ry="2" />
+<text  x="1173.66" y="943.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (5,015,045 nanoseconds, 0.55%)</title><rect x="685.8" y="725" width="6.4" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="688.76" y="735.5" ></text>
+</g>
+<g >
+<title>readdir64 (1,003,009 nanoseconds, 0.11%)</title><rect x="742.5" y="661" width="1.3" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="745.50" y="671.5" ></text>
+</g>
+<g >
+<title>realloc (4,012,036 nanoseconds, 0.44%)</title><rect x="920.5" y="757" width="5.1" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="923.47" y="767.5" ></text>
+</g>
+<g >
+<title>fstatat64 (18,054,162 nanoseconds, 1.97%)</title><rect x="466.5" y="757" width="23.2" height="15.0" fill="rgb(234,163,32)" rx="2" ry="2" />
+<text  x="469.52" y="767.5" >f..</text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (13,039,117 nanoseconds, 1.42%)</title><rect x="790.2" y="677" width="16.8" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="793.22" y="687.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="405" width="1.3" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1191.71" y="415.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="69.3" y="565" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="72.32" y="575.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (5,015,045 nanoseconds, 0.55%)</title><rect x="342.7" y="693" width="6.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="345.72" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="692.2" y="725" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="695.21" y="735.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="565" width="1.3" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1191.71" y="575.5" ></text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="16.4" y="661" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="19.45" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="805" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="677" width="1.3" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="759.69" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (1,003,009 nanoseconds, 0.11%)</title><rect x="699.9" y="693" width="1.3" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="702.95" y="703.5" ></text>
+</g>
+<g >
+<title>[python3.11] (2,006,018 nanoseconds, 0.22%)</title><rect x="1177.1" y="309" width="2.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1180.10" y="319.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="692.2" y="741" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="695.21" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (2,006,018 nanoseconds, 0.22%)</title><rect x="648.4" y="757" width="2.5" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="651.36" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (9,027,081 nanoseconds, 0.98%)</title><rect x="578.7" y="725" width="11.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="581.72" y="735.5" ></text>
+</g>
+<g >
+<title>PyObject_GetAttr (1,003,009 nanoseconds, 0.11%)</title><rect x="1174.5" y="437" width="1.3" height="15.0" fill="rgb(235,207,33)" rx="2" ry="2" />
+<text  x="1177.52" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="437" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="447.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="693" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (6,018,054 nanoseconds, 0.66%)</title><rect x="243.4" y="773" width="7.8" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="246.42" y="783.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="117" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="127.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (3,009,027 nanoseconds, 0.33%)</title><rect x="825.0" y="629" width="3.9" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="828.04" y="639.5" ></text>
+</g>
+<g >
+<title>_PyObject_FastCallDictTstate (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="725" width="1.2" height="15.0" fill="rgb(245,171,45)" rx="2" ry="2" />
+<text  x="1186.55" y="735.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="597" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="759.69" y="607.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (9,027,081 nanoseconds, 0.98%)</title><rect x="965.6" y="789" width="11.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="968.61" y="799.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="645" width="9.1" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1177.52" y="655.5" ></text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="47.4" y="629" width="2.6" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="50.40" y="639.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (89,267,801 nanoseconds, 9.73%)</title><rect x="463.9" y="789" width="114.8" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="466.95" y="799.5" >std::sys::fs::..</text>
+</g>
+<g >
+<title>_PyObject_FastCallDictTstate (1,003,009 nanoseconds, 0.11%)</title><rect x="1177.1" y="277" width="1.3" height="15.0" fill="rgb(245,171,45)" rx="2" ry="2" />
+<text  x="1180.10" y="287.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="613" width="1.2" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1186.55" y="623.5" ></text>
+</g>
+<g >
+<title>__open64_nocancel (2,006,018 nanoseconds, 0.22%)</title><rect x="750.2" y="645" width="2.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="753.24" y="655.5" ></text>
+</g>
+<g >
+<title>_PyAST_Compile (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="805" width="1.3" height="15.0" fill="rgb(237,171,35)" rx="2" ry="2" />
+<text  x="1187.84" y="815.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="517" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1190.42" y="527.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_relax (1,003,009 nanoseconds, 0.11%)</title><rect x="798.0" y="645" width="1.2" height="15.0" fill="rgb(245,151,44)" rx="2" ry="2" />
+<text  x="800.96" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="203.4" y="805" width="1.3" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="206.44" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (1,003,009 nanoseconds, 0.11%)</title><rect x="741.2" y="661" width="1.3" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="744.21" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="261" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1182.68" y="271.5" ></text>
+</g>
+<g >
+<title>PyObject_CallFunction (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="725" width="1.3" height="15.0" fill="rgb(247,207,46)" rx="2" ry="2" />
+<text  x="1191.71" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="613" width="1.3" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="846.09" y="623.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (10,030,090 nanoseconds, 1.09%)</title><rect x="951.4" y="789" width="12.9" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="954.42" y="799.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1175.8" y="325" width="1.3" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1178.81" y="335.5" ></text>
+</g>
+<g >
+<title>fastfind::eval::eval_printf_to (2,006,018 nanoseconds, 0.22%)</title><rect x="1076.5" y="773" width="2.6" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="1079.51" y="783.5" ></text>
+</g>
+<g >
+<title>main (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="901" width="325.0" height="15.0" fill="rgb(247,83,46)" rx="2" ry="2" />
+<text  x="848.67" y="911.5" >main</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1177.1" y="245" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1180.10" y="255.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (7,021,063 nanoseconds, 0.77%)</title><rect x="306.6" y="757" width="9.0" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="309.61" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (3,009,027 nanoseconds, 0.33%)</title><rect x="68.0" y="629" width="3.9" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="71.03" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (3,009,027 nanoseconds, 0.33%)</title><rect x="286.0" y="725" width="3.8" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="288.98" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (10,030,090 nanoseconds, 1.09%)</title><rect x="37.1" y="645" width="12.9" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="40.08" y="655.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="533" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1186.55" y="543.5" ></text>
+</g>
+<g >
+<title>fastfind::walker::walk_parallel::&lt;alloc::io::buffered::bufwriter::BufWriter&lt;std::io::stdio::StdoutLock&gt;&gt; (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="837" width="325.0" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="848.67" y="847.5" >fastfind::walker::walk_parallel::&lt;alloc::io..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="453" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1183.97" y="463.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (4,012,036 nanoseconds, 0.44%)</title><rect x="1009.5" y="773" width="5.1" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="1012.45" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (2,006,018 nanoseconds, 0.22%)</title><rect x="795.4" y="645" width="2.6" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="798.38" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="835.4" y="613" width="1.2" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="838.36" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;core::str::lossy::Utf8Chunks as core::iter::traits::iterator::Iterator&gt;::next (16,048,144 nanoseconds, 1.75%)</title><rect x="1052.0" y="725" width="20.6" height="15.0" fill="rgb(230,220,27)" rx="2" ry="2" />
+<text  x="1055.01" y="735.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="239.6" y="757" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="242.55" y="767.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="565" width="1.2" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1186.55" y="575.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="693.5" y="677" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="696.50" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="836.6" y="597" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="839.64" y="607.5" ></text>
+</g>
+<g >
+<title>fastfind::eval::evaluate (5,015,045 nanoseconds, 0.55%)</title><rect x="1079.1" y="789" width="6.4" height="15.0" fill="rgb(245,146,45)" rx="2" ry="2" />
+<text  x="1082.09" y="799.5" ></text>
+</g>
+<g >
+<title>closedir (3,009,027 nanoseconds, 0.33%)</title><rect x="286.0" y="757" width="3.8" height="15.0" fill="rgb(238,102,37)" rx="2" ry="2" />
+<text  x="288.98" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::core::index_path::IndexPath&gt;::adding (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="645" width="1.3" height="15.0" fill="rgb(243,159,42)" rx="2" ry="2" />
+<text  x="846.09" y="655.5" ></text>
+</g>
+<g >
+<title>__open64_nocancel (1,003,009 nanoseconds, 0.11%)</title><rect x="663.8" y="709" width="1.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="666.84" y="719.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1170.7" y="805" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1173.66" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (1,003,009 nanoseconds, 0.11%)</title><rect x="12.6" y="677" width="1.3" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="15.58" y="687.5" ></text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="663.8" y="725" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="666.84" y="735.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="701.2" y="693" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="704.23" y="703.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (2,006,018 nanoseconds, 0.22%)</title><rect x="15.2" y="677" width="2.5" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="18.16" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="791.5" y="581" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="794.51" y="591.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="15.2" y="613" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="18.16" y="623.5" ></text>
+</g>
+<g >
+<title>readdir64 (14,042,126 nanoseconds, 1.53%)</title><rect x="318.2" y="757" width="18.1" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="321.22" y="767.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (4,012,036 nanoseconds, 0.44%)</title><rect x="1175.8" y="453" width="5.2" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1178.81" y="463.5" ></text>
+</g>
+<g >
+<title>_PyObject_FastCallDictTstate (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="421" width="1.3" height="15.0" fill="rgb(245,171,45)" rx="2" ry="2" />
+<text  x="1183.97" y="431.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (3,009,027 nanoseconds, 0.33%)</title><rect x="656.1" y="757" width="3.9" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="659.10" y="767.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="773" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (11,033,099 nanoseconds, 1.20%)</title><rect x="578.7" y="773" width="14.2" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="581.72" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (3,009,027 nanoseconds, 0.33%)</title><rect x="681.9" y="725" width="3.9" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="684.89" y="735.5" ></text>
+</g>
+<g >
+<title>__aarch64_cas4_acq (1,003,009 nanoseconds, 0.11%)</title><rect x="720.6" y="741" width="1.3" height="15.0" fill="rgb(249,151,48)" rx="2" ry="2" />
+<text  x="723.58" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (5,015,045 nanoseconds, 0.55%)</title><rect x="741.2" y="693" width="6.5" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="744.21" y="703.5" ></text>
+</g>
+<g >
+<title>[python3.11] (2,006,018 nanoseconds, 0.22%)</title><rect x="1171.9" y="837" width="2.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1174.95" y="847.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="44.8" y="613" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="47.82" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="694.8" y="709" width="2.6" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="697.79" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="549" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="846.09" y="559.5" ></text>
+</g>
+<g >
+<title>__aarch64_cas4_acq (2,006,018 nanoseconds, 0.22%)</title><rect x="807.0" y="677" width="2.6" height="15.0" fill="rgb(249,151,48)" rx="2" ry="2" />
+<text  x="809.98" y="687.5" ></text>
+</g>
+<g >
+<title>_PyObject_MakeTpCall (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="405" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1183.97" y="415.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="749.0" y="677" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="751.95" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="746.4" y="645" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="749.37" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="799.2" y="629" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="802.25" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="656.1" y="725" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="659.10" y="735.5" ></text>
+</g>
+<g >
+<title>std::sys::fs::read_dir (6,018,054 nanoseconds, 0.66%)</title><rect x="749.0" y="693" width="7.7" height="15.0" fill="rgb(238,146,37)" rx="2" ry="2" />
+<text  x="751.95" y="703.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="741" width="9.1" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1177.52" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="757" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="767.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="449.8" y="773" width="1.2" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="452.76" y="783.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (4,012,036 nanoseconds, 0.44%)</title><rect x="1175.8" y="421" width="5.2" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1178.81" y="431.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldset8_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="818.6" y="677" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="821.59" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (50,150,450 nanoseconds, 5.46%)</title><rect x="861.1" y="789" width="64.5" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="864.15" y="799.5" >&lt;alloc:..</text>
+</g>
+<g >
+<title>&lt;std::sys::fs::unix::DirStream as core::ops::drop::Drop&gt;::drop (1,003,009 nanoseconds, 0.11%)</title><rect x="653.5" y="741" width="1.3" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="656.52" y="751.5" ></text>
+</g>
+<g >
+<title>__close_nocancel (1,003,009 nanoseconds, 0.11%)</title><rect x="834.1" y="597" width="1.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="837.07" y="607.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (7,021,063 nanoseconds, 0.77%)</title><rect x="53.8" y="629" width="9.1" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="56.85" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::core::index_path::IndexPath&gt;::adding (4,012,036 nanoseconds, 0.44%)</title><rect x="68.0" y="661" width="5.2" height="15.0" fill="rgb(243,159,42)" rx="2" ry="2" />
+<text  x="71.03" y="671.5" ></text>
+</g>
+<g >
+<title>PyEval_EvalCode (6,018,054 nanoseconds, 0.66%)</title><rect x="1175.8" y="501" width="7.8" height="15.0" fill="rgb(250,201,49)" rx="2" ry="2" />
+<text  x="1178.81" y="511.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="636.8" y="789" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="639.75" y="799.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="741" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1190.42" y="751.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="743.8" y="661" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="746.79" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="62.9" y="597" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="65.87" y="607.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="133" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="143.5" ></text>
+</g>
+<g >
+<title>[python3.11] (2,006,018 nanoseconds, 0.22%)</title><rect x="1171.9" y="853" width="2.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1174.95" y="863.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Sender&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="734.8" y="693" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="737.77" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::io::buffered::bufwriter::BufWriter&lt;std::io::stdio::StdoutLock&gt; as core::io::write::Write&gt;::write_fmt (31,093,279 nanoseconds, 3.39%)</title><rect x="1036.5" y="773" width="40.0" height="15.0" fill="rgb(229,184,26)" rx="2" ry="2" />
+<text  x="1039.54" y="783.5" >&lt;al..</text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="787.6" y="677" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="790.64" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (7,021,063 nanoseconds, 0.77%)</title><rect x="581.3" y="693" width="9.0" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="584.30" y="703.5" ></text>
+</g>
+<g >
+<title>opendir (29,087,261 nanoseconds, 3.17%)</title><rect x="534.9" y="757" width="37.4" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="537.87" y="767.5" >ope..</text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="349.2" y="757" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="352.17" y="767.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="261" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="271.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="757" width="64.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="14.29" y="767.5" >rayon::..</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (4,012,036 nanoseconds, 0.44%)</title><rect x="1175.8" y="405" width="5.2" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1178.81" y="415.5" ></text>
+</g>
+<g >
+<title>__close_nocancel (2,006,018 nanoseconds, 0.22%)</title><rect x="792.8" y="629" width="2.6" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="795.80" y="639.5" ></text>
+</g>
+<g >
+<title>realloc (3,009,027 nanoseconds, 0.33%)</title><rect x="68.0" y="597" width="3.9" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="71.03" y="607.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (11,033,099 nanoseconds, 1.20%)</title><rect x="578.7" y="757" width="14.2" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="581.72" y="767.5" ></text>
+</g>
+<g >
+<title>python3 (15,045,135 nanoseconds, 1.64%)</title><rect x="1170.7" y="965" width="19.3" height="15.0" fill="rgb(251,188,50)" rx="2" ry="2" />
+<text  x="1173.66" y="975.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (6,018,054 nanoseconds, 0.66%)</title><rect x="862.4" y="773" width="7.8" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="865.44" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (49,147,441 nanoseconds, 5.36%)</title><rect x="666.4" y="757" width="63.2" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="669.42" y="767.5" >&lt;&amp;rayo..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="741" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::waker::SyncWaker&gt;::notify (1,003,009 nanoseconds, 0.11%)</title><rect x="788.9" y="661" width="1.3" height="15.0" fill="rgb(243,210,42)" rx="2" ry="2" />
+<text  x="791.93" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="391.7" y="741" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="394.73" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="357" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1183.97" y="367.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="693" width="9.1" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1177.52" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (27,081,243 nanoseconds, 2.95%)</title><rect x="729.6" y="725" width="34.8" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="732.61" y="735.5" >&lt;&amp;..</text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (20,060,180 nanoseconds, 2.19%)</title><rect x="693.5" y="741" width="25.8" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="696.50" y="751.5" >&lt;..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1184.8" y="725" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1187.84" y="735.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (6,018,054 nanoseconds, 0.66%)</title><rect x="243.4" y="789" width="7.8" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="246.42" y="799.5" ></text>
+</g>
+<g >
+<title>__open64_nocancel (1,003,009 nanoseconds, 0.11%)</title><rect x="716.7" y="677" width="1.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="719.71" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (1,003,009 nanoseconds, 0.11%)</title><rect x="928.2" y="789" width="1.3" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="931.21" y="799.5" ></text>
+</g>
+<g >
+<title>memcmp (1,003,009 nanoseconds, 0.11%)</title><rect x="1169.4" y="821" width="1.3" height="15.0" fill="rgb(238,144,36)" rx="2" ry="2" />
+<text  x="1172.37" y="831.5" ></text>
+</g>
+<g >
+<title>fastfind::eval::eval_printf (1,003,009 nanoseconds, 0.11%)</title><rect x="1035.2" y="789" width="1.3" height="15.0" fill="rgb(243,146,42)" rx="2" ry="2" />
+<text  x="1038.25" y="799.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="1026.2" y="789" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="1029.22" y="799.5" ></text>
+</g>
+<g >
+<title>getdents64 (11,033,099 nanoseconds, 1.20%)</title><rect x="320.8" y="741" width="14.2" height="15.0" fill="rgb(235,170,33)" rx="2" ry="2" />
+<text  x="323.80" y="751.5" ></text>
+</g>
+<g >
+<title>readdir64 (1,003,009 nanoseconds, 0.11%)</title><rect x="698.7" y="693" width="1.2" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="701.66" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (7,021,063 nanoseconds, 0.77%)</title><rect x="834.1" y="645" width="9.0" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="837.07" y="655.5" ></text>
+</g>
+<g >
+<title>__aarch64_cas8_acq_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="787.6" y="661" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="790.64" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (5,015,045 nanoseconds, 0.55%)</title><rect x="244.7" y="741" width="6.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="247.71" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="243.4" y="757" width="1.3" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="246.42" y="767.5" ></text>
+</g>
+<g >
+<title>core::ptr::drop_glue::&lt;jwalk::core::dir_entry::DirEntry&lt; (39,117,351 nanoseconds, 4.26%)</title><rect x="977.2" y="821" width="50.3" height="15.0" fill="rgb(250,133,50)" rx="2" ry="2" />
+<text  x="980.21" y="831.5" >core:..</text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="638.0" y="773" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="641.04" y="783.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="37" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="47.5" ></text>
+</g>
+<g >
+<title>realloc (5,015,045 nanoseconds, 0.55%)</title><rect x="244.7" y="757" width="6.5" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="247.71" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="714.1" y="645" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="717.13" y="655.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="654.8" y="741" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="657.81" y="751.5" ></text>
+</g>
+<g >
+<title>malloc (4,012,036 nanoseconds, 0.44%)</title><rect x="524.6" y="741" width="5.1" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="527.56" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (4,012,036 nanoseconds, 0.44%)</title><rect x="782.5" y="661" width="5.1" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="785.48" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (35,105,315 nanoseconds, 3.83%)</title><rect x="872.8" y="741" width="45.1" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="875.75" y="751.5" >[lib..</text>
+</g>
+<g >
+<title>_init (1,003,009 nanoseconds, 0.11%)</title><rect x="529.7" y="773" width="1.3" height="15.0" fill="rgb(236,153,34)" rx="2" ry="2" />
+<text  x="532.72" y="783.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="52.6" y="613" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="55.56" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;core::result::Result&lt;jwalk::core::read_dir::ReadDir&lt; (4,012,036 nanoseconds, 0.44%)</title><rect x="849.5" y="805" width="5.2" height="15.0" fill="rgb(244,210,43)" rx="2" ry="2" />
+<text  x="852.54" y="815.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (139,418,251 nanoseconds, 15.19%)</title><rect x="666.4" y="773" width="179.3" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="669.42" y="783.5" >rayon::iter::plumbing::..</text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="805.7" y="629" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="808.69" y="639.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_acq_rel (3,009,027 nanoseconds, 0.33%)</title><rect x="759.3" y="709" width="3.8" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="762.27" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (7,021,063 nanoseconds, 0.77%)</title><rect x="11.3" y="709" width="9.0" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="14.29" y="719.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1182.3" y="469" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1185.26" y="479.5" ></text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="694.8" y="693" width="2.6" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="697.79" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;rayon_core::registry::WorkerThread&gt;::wait_until_cold (649,949,832 nanoseconds, 70.82%)</title><rect x="10.0" y="869" width="835.7" height="15.0" fill="rgb(243,206,41)" rx="2" ry="2" />
+<text  x="13.00" y="879.5" >&lt;rayon_core::registry::WorkerThread&gt;::wait_until_cold</text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="533" width="1.3" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1191.71" y="543.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="437" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1183.97" y="447.5" ></text>
+</g>
+<g >
+<title>_PyFunction_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="677" width="1.3" height="15.0" fill="rgb(230,171,28)" rx="2" ry="2" />
+<text  x="1190.42" y="687.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="645" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;std::path::Path&gt;::_join (9,027,081 nanoseconds, 0.98%)</title><rect x="338.9" y="773" width="11.6" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="341.85" y="783.5" ></text>
+</g>
+<g >
+<title>malloc (6,018,054 nanoseconds, 0.66%)</title><rect x="929.5" y="789" width="7.7" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="932.50" y="799.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (8,024,072 nanoseconds, 0.87%)</title><rect x="580.0" y="709" width="10.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="583.01" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="743.8" y="645" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="746.79" y="655.5" ></text>
+</g>
+<g >
+<title>malloc (3,009,027 nanoseconds, 0.33%)</title><rect x="460.1" y="789" width="3.8" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="463.08" y="799.5" ></text>
+</g>
+<g >
+<title>realloc (1,003,009 nanoseconds, 0.11%)</title><rect x="243.4" y="741" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="246.42" y="751.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (6,018,054 nanoseconds, 0.66%)</title><rect x="394.3" y="741" width="7.7" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="397.31" y="751.5" ></text>
+</g>
+<g >
+<title>realloc (11,033,099 nanoseconds, 1.20%)</title><rect x="578.7" y="741" width="14.2" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="581.72" y="751.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="373" width="1.3" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1191.71" y="383.5" ></text>
+</g>
+<g >
+<title>_start (15,045,135 nanoseconds, 1.64%)</title><rect x="1170.7" y="949" width="19.3" height="15.0" fill="rgb(239,139,37)" rx="2" ry="2" />
+<text  x="1173.66" y="959.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1170.7" y="837" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1173.66" y="847.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::fs::unix::DirStream as core::ops::drop::Drop&gt;::drop (2,006,018 nanoseconds, 0.22%)</title><rect x="738.6" y="677" width="2.6" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="741.63" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="790.2" y="613" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="793.22" y="623.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1175.8" y="261" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1178.81" y="271.5" ></text>
+</g>
+<g >
+<title>__open64_nocancel (1,003,009 nanoseconds, 0.11%)</title><rect x="16.4" y="629" width="1.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="19.45" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="69.3" y="549" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="72.32" y="559.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (24,072,216 nanoseconds, 2.62%)</title><rect x="492.3" y="725" width="31.0" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="495.32" y="735.5" >[l..</text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (2,006,018 nanoseconds, 0.22%)</title><rect x="830.2" y="629" width="2.6" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="833.20" y="639.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_rel (2,006,018 nanoseconds, 0.22%)</title><rect x="840.5" y="629" width="2.6" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="843.51" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (8,024,072 nanoseconds, 0.87%)</title><rect x="338.9" y="757" width="10.3" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="341.85" y="767.5" ></text>
+</g>
+<g >
+<title>jwalk::process_dir_entry_result::&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="703.8" y="709" width="1.3" height="15.0" fill="rgb(244,133,43)" rx="2" ry="2" />
+<text  x="706.81" y="719.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="318.2" y="741" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="321.22" y="751.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="657.4" y="709" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="660.39" y="719.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="501" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1186.55" y="511.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="781.2" y="661" width="1.3" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="784.19" y="671.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="715.4" y="677" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="718.42" y="687.5" ></text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace::&lt;fn (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="885" width="325.0" height="15.0" fill="rgb(251,146,51)" rx="2" ry="2" />
+<text  x="848.67" y="895.5" >std::sys::backtrace::__rust_begin_short_bac..</text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (157,472,413 nanoseconds, 17.16%)</title><rect x="643.2" y="805" width="202.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="646.20" y="815.5" >rayon::iter::plumbing::bri..</text>
+</g>
+<g >
+<title>malloc (3,009,027 nanoseconds, 0.33%)</title><rect x="712.8" y="693" width="3.9" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="715.84" y="703.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="533" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="846.09" y="543.5" ></text>
+</g>
+<g >
+<title>[python3.11] (2,006,018 nanoseconds, 0.22%)</title><rect x="1177.1" y="293" width="2.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1180.10" y="303.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::core::index_path::IndexPath&gt;::adding (1,003,009 nanoseconds, 0.11%)</title><rect x="592.9" y="789" width="1.3" height="15.0" fill="rgb(243,159,42)" rx="2" ry="2" />
+<text  x="595.91" y="799.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="923.0" y="741" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="926.05" y="751.5" ></text>
+</g>
+<g >
+<title>getdents64 (1,003,009 nanoseconds, 0.11%)</title><rect x="837.9" y="581" width="1.3" height="15.0" fill="rgb(235,170,33)" rx="2" ry="2" />
+<text  x="840.93" y="591.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_rel (7,021,063 nanoseconds, 0.77%)</title><rect x="451.0" y="789" width="9.1" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="454.05" y="799.5" ></text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="16.4" y="645" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="19.45" y="655.5" ></text>
+</g>
+<g >
+<title>__libc_calloc (1,003,009 nanoseconds, 0.11%)</title><rect x="239.6" y="773" width="1.2" height="15.0" fill="rgb(238,154,36)" rx="2" ry="2" />
+<text  x="242.55" y="783.5" ></text>
+</g>
+<g >
+<title>_PyRun_AnyFileObject (9,027,081 nanoseconds, 0.98%)</title><rect x="1174.5" y="869" width="11.6" height="15.0" fill="rgb(241,171,39)" rx="2" ry="2" />
+<text  x="1177.52" y="879.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="799.2" y="645" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="802.25" y="655.5" ></text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1179.7" y="341" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1182.68" y="351.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (15,045,135 nanoseconds, 1.64%)</title><rect x="1170.7" y="917" width="19.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="1173.66" y="927.5" ></text>
+</g>
+<g >
+<title>malloc (3,009,027 nanoseconds, 0.33%)</title><rect x="460.1" y="773" width="3.8" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="463.08" y="783.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="725" width="64.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="14.29" y="735.5" >rayon::..</text>
+</g>
+<g >
+<title>__aarch64_ldadd8_relax (1,003,009 nanoseconds, 0.11%)</title><rect x="41.0" y="629" width="1.2" height="15.0" fill="rgb(245,151,44)" rx="2" ry="2" />
+<text  x="43.95" y="639.5" ></text>
+</g>
+<g >
+<title>__fstat64 (1,003,009 nanoseconds, 0.11%)</title><rect x="465.2" y="757" width="1.3" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="468.23" y="767.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_acq_rel (5,015,045 nanoseconds, 0.55%)</title><rect x="721.9" y="741" width="6.4" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="724.87" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (3,009,027 nanoseconds, 0.33%)</title><rect x="68.0" y="613" width="3.9" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="71.03" y="623.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="732.2" y="693" width="2.6" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="735.19" y="703.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="636.8" y="773" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="639.75" y="783.5" ></text>
+</g>
+<g >
+<title>[python3.11] (9,027,081 nanoseconds, 0.98%)</title><rect x="1174.5" y="837" width="11.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="847.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_relax (2,006,018 nanoseconds, 0.22%)</title><rect x="629.0" y="805" width="2.6" height="15.0" fill="rgb(245,151,44)" rx="2" ry="2" />
+<text  x="632.02" y="815.5" ></text>
+</g>
+<g >
+<title>core::fmt::write (2,006,018 nanoseconds, 0.22%)</title><rect x="1037.8" y="741" width="2.6" height="15.0" fill="rgb(240,133,38)" rx="2" ry="2" />
+<text  x="1040.83" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (5,015,045 nanoseconds, 0.55%)</title><rect x="795.4" y="661" width="6.4" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="798.38" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (10,030,090 nanoseconds, 1.09%)</title><rect x="819.9" y="645" width="12.9" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="822.88" y="655.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="719.3" y="661" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="722.29" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;std::path::Path&gt;::_join (3,009,027 nanoseconds, 0.33%)</title><rect x="37.1" y="629" width="3.9" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="40.08" y="639.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="801.8" y="661" width="1.3" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="804.83" y="671.5" ></text>
+</g>
+<g >
+<title>readdir64 (2,006,018 nanoseconds, 0.22%)</title><rect x="795.4" y="629" width="2.6" height="15.0" fill="rgb(236,184,34)" rx="2" ry="2" />
+<text  x="798.38" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="15.2" y="661" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="18.16" y="671.5" ></text>
+</g>
+<g >
+<title>cfree (7,021,063 nanoseconds, 0.77%)</title><rect x="393.0" y="757" width="9.0" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="396.02" y="767.5" ></text>
+</g>
+<g >
+<title>__aarch64_cas4_acq (1,003,009 nanoseconds, 0.11%)</title><rect x="844.4" y="645" width="1.3" height="15.0" fill="rgb(249,151,48)" rx="2" ry="2" />
+<text  x="847.38" y="655.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="693" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="703.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="756.7" y="661" width="1.3" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="759.69" y="671.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (3,009,027 nanoseconds, 0.33%)</title><rect x="286.0" y="709" width="3.8" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="288.98" y="719.5" ></text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="757" width="9.1" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1177.52" y="767.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="453" width="1.3" height="15.0" fill="rgb(230,207,28)" rx="2" ry="2" />
+<text  x="1191.71" y="463.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="709" width="1.2" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1186.55" y="719.5" ></text>
+</g>
+<g >
+<title>getdents64 (1,003,009 nanoseconds, 0.11%)</title><rect x="698.7" y="677" width="1.2" height="15.0" fill="rgb(235,170,33)" rx="2" ry="2" />
+<text  x="701.66" y="687.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::sync::Arc&lt;std::sys::fs::unix::InnerReadDir&gt;&gt;::drop_slow (1,003,009 nanoseconds, 0.11%)</title><rect x="693.5" y="725" width="1.3" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="696.50" y="735.5" ></text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="716.7" y="693" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="719.71" y="703.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="709" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="719.5" ></text>
+</g>
+<g >
+<title>PyObject_CallFunction (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="773" width="1.3" height="15.0" fill="rgb(247,207,46)" rx="2" ry="2" />
+<text  x="1190.42" y="783.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="15.2" y="629" width="1.2" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="18.16" y="639.5" ></text>
+</g>
+<g >
+<title>_PyObject_CallMethod (1,003,009 nanoseconds, 0.11%)</title><rect x="1174.5" y="501" width="1.3" height="15.0" fill="rgb(248,171,47)" rx="2" ry="2" />
+<text  x="1177.52" y="511.5" ></text>
+</g>
+<g >
+<title>PyObject_Vectorcall (2,006,018 nanoseconds, 0.22%)</title><rect x="1177.1" y="325" width="2.6" height="15.0" fill="rgb(230,207,28)" rx="2" ry="2" />
+<text  x="1180.10" y="335.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (12,036,108 nanoseconds, 1.31%)</title><rect x="948.8" y="805" width="15.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="951.84" y="815.5" ></text>
+</g>
+<g >
+<title>fastfind::eval::evaluate (45,135,405 nanoseconds, 4.92%)</title><rect x="1027.5" y="821" width="58.0" height="15.0" fill="rgb(245,146,45)" rx="2" ry="2" />
+<text  x="1030.51" y="831.5" >fastfi..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVec&lt;usize&gt;&gt;::grow_one (11,033,099 nanoseconds, 1.20%)</title><rect x="578.7" y="789" width="14.2" height="15.0" fill="rgb(251,184,50)" rx="2" ry="2" />
+<text  x="581.72" y="799.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (21,063,189 nanoseconds, 2.30%)</title><rect x="175.1" y="789" width="27.1" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="178.07" y="799.5" >&lt;..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="677" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1186.55" y="687.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (50,150,450 nanoseconds, 5.46%)</title><rect x="465.2" y="773" width="64.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="468.23" y="783.5" >[libc.s..</text>
+</g>
+<g >
+<title>malloc (2,006,018 nanoseconds, 0.22%)</title><rect x="60.3" y="613" width="2.6" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="63.30" y="623.5" ></text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (43,129,387 nanoseconds, 4.70%)</title><rect x="20.3" y="709" width="55.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="23.32" y="719.5" >rayon..</text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (7,021,063 nanoseconds, 0.77%)</title><rect x="729.6" y="709" width="9.0" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="732.61" y="719.5" ></text>
+</g>
+<g >
+<title>__open64_nocancel (1,003,009 nanoseconds, 0.11%)</title><rect x="805.7" y="613" width="1.3" height="15.0" fill="rgb(236,144,34)" rx="2" ry="2" />
+<text  x="808.69" y="623.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (6,018,054 nanoseconds, 0.66%)</title><rect x="341.4" y="709" width="7.8" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="344.43" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::finish_grow (1,003,009 nanoseconds, 0.11%)</title><rect x="859.9" y="773" width="1.2" height="15.0" fill="rgb(234,184,31)" rx="2" ry="2" />
+<text  x="862.86" y="783.5" ></text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;rayon_core::registry::DefaultSpawn as rayon_core::registry::ThreadSpawn&gt;::spawn::{closure#0},  (649,949,832 nanoseconds, 70.82%)</title><rect x="10.0" y="885" width="835.7" height="15.0" fill="rgb(248,146,47)" rx="2" ry="2" />
+<text  x="13.00" y="895.5" >std::sys::backtrace::__rust_begin_short_backtrace::&lt;&lt;rayon_core::registry::DefaultSpawn as rayon_core::registry::Thr..</text>
+</g>
+<g >
+<title>PyImport_ImportModuleLevelObject (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="613" width="9.1" height="15.0" fill="rgb(241,226,39)" rx="2" ry="2" />
+<text  x="1177.52" y="623.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="15.2" y="645" width="1.2" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="18.16" y="655.5" ></text>
+</g>
+<g >
+<title>cfree (22,066,198 nanoseconds, 2.40%)</title><rect x="948.8" y="821" width="28.4" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="951.84" y="831.5" >cf..</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="309" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1191.71" y="319.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="939.8" y="805" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="942.81" y="815.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (7,021,063 nanoseconds, 0.77%)</title><rect x="1005.6" y="789" width="9.0" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="1008.58" y="799.5" ></text>
+</g>
+<g >
+<title>bcmp@plt (1,003,009 nanoseconds, 0.11%)</title><rect x="947.6" y="821" width="1.2" height="15.0" fill="rgb(231,162,29)" rx="2" ry="2" />
+<text  x="950.55" y="831.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1177.1" y="213" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1180.10" y="223.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_relax (1,003,009 nanoseconds, 0.11%)</title><rect x="728.3" y="741" width="1.3" height="15.0" fill="rgb(245,151,44)" rx="2" ry="2" />
+<text  x="731.32" y="751.5" ></text>
+</g>
+<g >
+<title>__sched_yield (5,015,045 nanoseconds, 0.55%)</title><rect x="941.1" y="821" width="6.5" height="15.0" fill="rgb(241,132,40)" rx="2" ry="2" />
+<text  x="944.10" y="831.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_rel (21,063,189 nanoseconds, 2.30%)</title><rect x="977.2" y="805" width="27.1" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="980.21" y="815.5" >_..</text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="746.4" y="661" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="749.37" y="671.5" ></text>
+</g>
+<g >
+<title>malloc (1,003,009 nanoseconds, 0.11%)</title><rect x="755.4" y="661" width="1.3" height="15.0" fill="rgb(238,112,36)" rx="2" ry="2" />
+<text  x="758.40" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;jwalk::WalkDirGeneric&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="15.2" y="693" width="2.5" height="15.0" fill="rgb(248,159,48)" rx="2" ry="2" />
+<text  x="18.16" y="703.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="597" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="607.5" ></text>
+</g>
+<g >
+<title>cfree (4,012,036 nanoseconds, 0.44%)</title><rect x="1160.3" y="805" width="5.2" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="1163.34" y="815.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="843.1" y="565" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="846.09" y="575.5" ></text>
+</g>
+<g >
+<title>[python3.11] (4,012,036 nanoseconds, 0.44%)</title><rect x="1175.8" y="437" width="5.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1178.81" y="447.5" ></text>
+</g>
+<g >
+<title>Py_FinalizeEx (3,009,027 nanoseconds, 0.33%)</title><rect x="1170.7" y="869" width="3.8" height="15.0" fill="rgb(248,194,47)" rx="2" ry="2" />
+<text  x="1173.66" y="879.5" ></text>
+</g>
+<g >
+<title>jwalk::process_dir_entry_result::&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="402.0" y="773" width="1.3" height="15.0" fill="rgb(244,133,43)" rx="2" ry="2" />
+<text  x="405.04" y="783.5" ></text>
+</g>
+<g >
+<title>realloc (6,018,054 nanoseconds, 0.66%)</title><rect x="862.4" y="757" width="7.8" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="865.44" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="697.4" y="693" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="700.37" y="703.5" ></text>
+</g>
+<g >
+<title>cfree (16,048,144 nanoseconds, 1.75%)</title><rect x="1004.3" y="805" width="20.6" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="1007.30" y="815.5" ></text>
+</g>
+<g >
+<title>opendir (1,003,009 nanoseconds, 0.11%)</title><rect x="716.7" y="709" width="1.3" height="15.0" fill="rgb(238,195,37)" rx="2" ry="2" />
+<text  x="719.71" y="719.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldset8_rel (1,003,009 nanoseconds, 0.11%)</title><rect x="33.2" y="645" width="1.3" height="15.0" fill="rgb(234,151,32)" rx="2" ry="2" />
+<text  x="36.21" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::io::buffered::bufwriter::BufWriter&lt;std::io::stdio::StdoutLock&gt; as core::io::write::Write&gt;::write_fmt (2,006,018 nanoseconds, 0.22%)</title><rect x="1037.8" y="757" width="2.6" height="15.0" fill="rgb(229,184,26)" rx="2" ry="2" />
+<text  x="1040.83" y="767.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (8,024,072 nanoseconds, 0.87%)</title><rect x="770.9" y="661" width="10.3" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="773.87" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1188.7" y="773" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1191.71" y="783.5" ></text>
+</g>
+<g >
+<title>__aarch64_ldadd8_relax (2,006,018 nanoseconds, 0.22%)</title><rect x="816.0" y="677" width="2.6" height="15.0" fill="rgb(245,151,44)" rx="2" ry="2" />
+<text  x="819.01" y="687.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1181.0" y="389" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1183.97" y="399.5" ></text>
+</g>
+<g >
+<title>realloc (2,006,018 nanoseconds, 0.22%)</title><rect x="790.2" y="629" width="2.6" height="15.0" fill="rgb(238,184,36)" rx="2" ry="2" />
+<text  x="793.22" y="639.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="961.7" y="773" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="964.74" y="783.5" ></text>
+</g>
+<g >
+<title>cfree (1,003,009 nanoseconds, 0.11%)</title><rect x="638.0" y="805" width="1.3" height="15.0" fill="rgb(246,123,46)" rx="2" ry="2" />
+<text  x="641.04" y="815.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (43,129,387 nanoseconds, 4.70%)</title><rect x="20.3" y="677" width="55.5" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="23.32" y="687.5" >&lt;&amp;ray..</text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (43,129,387 nanoseconds, 4.70%)</title><rect x="20.3" y="693" width="55.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="23.32" y="703.5" >rayon..</text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (3,009,027 nanoseconds, 0.33%)</title><rect x="204.7" y="805" width="3.9" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="207.73" y="815.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (4,012,036 nanoseconds, 0.44%)</title><rect x="409.8" y="741" width="5.1" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="412.78" y="751.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1174.5" y="469" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="479.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="549" width="1.2" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1186.55" y="559.5" ></text>
+</g>
+<g >
+<title>syscall (3,009,027 nanoseconds, 0.33%)</title><rect x="639.3" y="805" width="3.9" height="15.0" fill="rgb(230,167,28)" rx="2" ry="2" />
+<text  x="642.33" y="815.5" ></text>
+</g>
+<g >
+<title>rayon::iter::plumbing::bridge_unindexed_producer_consumer::&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (50,150,450 nanoseconds, 5.46%)</title><rect x="11.3" y="821" width="64.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="14.29" y="831.5" >rayon::..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1173.2" y="789" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1176.23" y="799.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="53" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="63.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="661.3" y="741" width="2.5" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="664.26" y="751.5" ></text>
+</g>
+<g >
+<title>&lt;core::iter::adapters::filter_map::FilterMap&lt;std::fs::ReadDir, &lt;jwalk::WalkDirGeneric&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="801.8" y="645" width="1.3" height="15.0" fill="rgb(248,220,48)" rx="2" ry="2" />
+<text  x="804.83" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;core::io::write::default_write_fmt::Adapter&lt;alloc::io::buffered::bufwriter::BufWriter&lt;std::io::stdio::StdoutLock&gt;&gt; as core::fmt::Write&gt;::write_str (1,003,009 nanoseconds, 0.11%)</title><rect x="1050.7" y="725" width="1.3" height="15.0" fill="rgb(236,220,34)" rx="2" ry="2" />
+<text  x="1053.72" y="735.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="85" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1181.39" y="95.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="315.6" y="757" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="318.64" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (1,003,009 nanoseconds, 0.11%)</title><rect x="47.4" y="597" width="1.3" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="50.40" y="607.5" ></text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (8,024,072 nanoseconds, 0.87%)</title><rect x="1174.5" y="773" width="10.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1177.52" y="783.5" ></text>
+</g>
+<g >
+<title>all (917,753,235 nanoseconds, 100%)</title><rect x="10.0" y="981" width="1180.0" height="15.0" fill="rgb(255,230,55)" rx="2" ry="2" />
+<text  x="13.00" y="991.5" ></text>
+</g>
+<g >
+<title>[python3.11] (7,021,063 nanoseconds, 0.77%)</title><rect x="1174.5" y="661" width="9.1" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::collections::binary_heap::BinaryHeap&lt;jwalk::core::ordered::Ordered&lt;core::result::Result&lt;jwalk::core::read_dir::ReadDir&lt; (28,084,252 nanoseconds, 3.06%)</title><rect x="1122.9" y="805" width="36.1" height="15.0" fill="rgb(244,184,43)" rx="2" ry="2" />
+<text  x="1125.94" y="815.5" >&lt;al..</text>
+</g>
+<g >
+<title>PyObject_CallMethodObjArgs (1,003,009 nanoseconds, 0.11%)</title><rect x="1175.8" y="309" width="1.3" height="15.0" fill="rgb(237,207,35)" rx="2" ry="2" />
+<text  x="1178.81" y="319.5" ></text>
+</g>
+<g >
+<title>&lt;std::sys::sync::mutex::futex::Mutex&gt;::lock_contended (2,006,018 nanoseconds, 0.22%)</title><rect x="736.1" y="693" width="2.5" height="15.0" fill="rgb(250,179,49)" rx="2" ry="2" />
+<text  x="739.05" y="703.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="165" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="175.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (53,159,477 nanoseconds, 5.79%)</title><rect x="857.3" y="805" width="68.3" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="860.28" y="815.5" >&lt;alloc:..</text>
+</g>
+<g >
+<title>rayon_core::join::join_context::&lt;rayon::iter::plumbing::bridge_unindexed_producer_consumer&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (157,472,413 nanoseconds, 17.16%)</title><rect x="643.2" y="821" width="202.5" height="15.0" fill="rgb(251,149,51)" rx="2" ry="2" />
+<text  x="646.20" y="831.5" >rayon_core::join::join_con..</text>
+</g>
+<g >
+<title>&lt;core::bstr::ByteStr as core::fmt::Display&gt;::fmt (3,009,027 nanoseconds, 0.33%)</title><rect x="1046.9" y="725" width="3.8" height="15.0" fill="rgb(229,220,26)" rx="2" ry="2" />
+<text  x="1049.85" y="735.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (649,949,832 nanoseconds, 70.82%)</title><rect x="10.0" y="949" width="835.7" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="13.00" y="959.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>_PyRun_SimpleFileObject (9,027,081 nanoseconds, 0.98%)</title><rect x="1174.5" y="853" width="11.6" height="15.0" fill="rgb(241,171,39)" rx="2" ry="2" />
+<text  x="1177.52" y="863.5" ></text>
+</g>
+<g >
+<title>[python3.11] (9,027,081 nanoseconds, 0.98%)</title><rect x="1174.5" y="821" width="11.6" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1177.52" y="831.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Sender&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (1,003,009 nanoseconds, 0.11%)</title><rect x="788.9" y="677" width="1.3" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="791.93" y="687.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="181" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="191.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="712.8" y="661" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="715.84" y="671.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="517" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1186.55" y="527.5" ></text>
+</g>
+<g >
+<title>find::main (252,758,268 nanoseconds, 27.54%)</title><rect x="845.7" y="853" width="325.0" height="15.0" fill="rgb(247,177,46)" rx="2" ry="2" />
+<text  x="848.67" y="863.5" >find::main</text>
+</g>
+<g >
+<title>_PyEval_EvalFrameDefault (1,003,009 nanoseconds, 0.11%)</title><rect x="1187.4" y="581" width="1.3" height="15.0" fill="rgb(228,171,25)" rx="2" ry="2" />
+<text  x="1190.42" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;std::path::Path&gt;::_join (67,201,603 nanoseconds, 7.32%)</title><rect x="854.7" y="821" width="86.4" height="15.0" fill="rgb(246,179,45)" rx="2" ry="2" />
+<text  x="857.70" y="831.5" >&lt;std::path..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="485" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1186.55" y="495.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (2,006,018 nanoseconds, 0.22%)</title><rect x="42.2" y="613" width="2.6" height="15.0" fill="rgb(231,147,29)" rx="2" ry="2" />
+<text  x="45.24" y="623.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="101" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1181.39" y="111.5" ></text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1183.6" y="581" width="1.2" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1186.55" y="591.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVec&lt;usize&gt;&gt;::grow_one (3,009,027 nanoseconds, 0.33%)</title><rect x="68.0" y="645" width="3.9" height="15.0" fill="rgb(251,184,50)" rx="2" ry="2" />
+<text  x="71.03" y="655.5" ></text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&gt;::grow_amortized (1,003,009 nanoseconds, 0.11%)</title><rect x="719.3" y="709" width="1.3" height="15.0" fill="rgb(251,184,51)" rx="2" ry="2" />
+<text  x="722.29" y="719.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (441,323,960 nanoseconds, 48.09%)</title><rect x="75.8" y="821" width="567.4" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="78.77" y="831.5" >&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::Or..</text>
+</g>
+<g >
+<title>[python3.11] (1,003,009 nanoseconds, 0.11%)</title><rect x="1173.2" y="773" width="1.3" height="15.0" fill="rgb(243,208,42)" rx="2" ry="2" />
+<text  x="1176.23" y="783.5" ></text>
+</g>
+<g >
+<title>&lt;crossbeam_channel::channel::Receiver&lt;jwalk::core::ordered::Ordered&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (2,006,018 nanoseconds, 0.22%)</title><rect x="650.9" y="773" width="2.6" height="15.0" fill="rgb(251,210,51)" rx="2" ry="2" />
+<text  x="653.94" y="783.5" ></text>
+</g>
+<g >
+<title>Py_RunMain (12,036,108 nanoseconds, 1.31%)</title><rect x="1170.7" y="885" width="15.4" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="1173.66" y="895.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;rayon::iter::par_bridge::IterParallelProducer&lt;jwalk::core::ordered_queue::OrderedQueueIter&lt;jwalk::core::read_dir_spec::ReadDirSpec&lt; (8,024,072 nanoseconds, 0.87%)</title><rect x="20.3" y="661" width="10.3" height="15.0" fill="rgb(251,185,51)" rx="2" ry="2" />
+<text  x="23.32" y="671.5" ></text>
+</g>
+<g >
+<title>&lt;std::fs::ReadDir as core::iter::traits::iterator::Iterator&gt;::next (26,078,234 nanoseconds, 2.84%)</title><rect x="305.3" y="773" width="33.6" height="15.0" fill="rgb(230,179,27)" rx="2" ry="2" />
+<text  x="308.32" y="783.5" >&lt;s..</text>
+</g>
+<g >
+<title>&lt;alloc::raw_vec::RawVecInner&lt;_&gt;&gt;::reserve::do_reserve_and_handle::&lt;alloc::alloc::Global&gt; (1,003,009 nanoseconds, 0.11%)</title><rect x="338.9" y="741" width="1.2" height="15.0" fill="rgb(240,184,39)" rx="2" ry="2" />
+<text  x="341.85" y="751.5" ></text>
+</g>
+<g >
+<title>_PyObject_FastCallDictTstate (1,003,009 nanoseconds, 0.11%)</title><rect x="1178.4" y="245" width="1.3" height="15.0" fill="rgb(245,171,45)" rx="2" ry="2" />
+<text  x="1181.39" y="255.5" ></text>
+</g>
+</g>
+</svg>

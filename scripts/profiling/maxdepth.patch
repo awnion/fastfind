@@ -1,0 +1,8 @@
+--- a/src/walker.rs
++++ b/src/walker.rs
+@@ -209 +209 @@
+-        if is_dir && let Ok(entries) = fs::read_dir(path) {
++        if is_dir && config.max_depth.is_none_or(|max| depth < max) && let Ok(entries) = fs::read_dir(path) {
+@@ -253 +253 @@
+-        if should_descend && let Ok(entries) = fs::read_dir(path) {
++        if should_descend && config.max_depth.is_none_or(|max| depth < max) && let Ok(entries) = fs::read_dir(path) {

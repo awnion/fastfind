@@ -89,6 +89,10 @@ fn walk_parallel(
         stdout,
         depth: 0,
         batch_exec: Vec::new(),
+        #[cfg(unix)]
+        user_ids: Default::default(),
+        #[cfg(unix)]
+        group_ids: Default::default(),
     };
 
     for entry in walker {
@@ -158,6 +162,10 @@ fn walk_sequential(
         stdout,
         depth: 0,
         batch_exec: Vec::new(),
+        #[cfg(unix)]
+        user_ids: Default::default(),
+        #[cfg(unix)]
+        group_ids: Default::default(),
     };
 
     let result = walk_sequential_recursive(config, root, 0, root_dev, &mut ctx);
@@ -203,10 +211,12 @@ fn walk_sequential_recursive(
 
     let is_dir = meta.is_dir();
     let file_type = entry_type_from_metadata(&meta);
+    // Entries at maxdepth are evaluated, but their children must not be read.
+    let can_descend = is_dir && config.max_depth.is_none_or(|max| depth < max);
 
     if config.depth_first {
         // Process children first, then this entry
-        if is_dir && let Ok(entries) = fs::read_dir(path) {
+        if can_descend && let Ok(entries) = fs::read_dir(path) {
             for entry in entries {
                 if QUIT_SIGNAL.load(Ordering::Relaxed) {
                     break;
@@ -231,7 +241,7 @@ fn walk_sequential_recursive(
         }
     } else {
         // Normal order: process this entry, then children (unless pruned)
-        let mut should_descend = is_dir;
+        let mut should_descend = can_descend;
 
         if depth >= config.min_depth {
             let mut info = EntryInfo {

@@ -1,0 +1,29 @@
+jwalk v0.9.0
+└── fastfind v0.1.3 (/work/repo)
+fbb4d480e48f9d4c87ecfd3c9029b720e41000ca1fe5056ead4c44e25abcf1dd  /work/bin/baseline
+6834ae412424d1c4f5c617d8bf54ff1fc163906226bbfb1b2d54f446e943b368  /work/bin/lazy
+994f9a8c1637398c8aa42fce2b27c03fa7b8aa90f66cca898420dd9dc415133f  /work/bin/maxdepth
+12
+	Command being timed: "/work/bin/baseline /work/corpus/wide -depth -type f"
+	User time (seconds): 0.00
+	System time (seconds): 0.04
+	Percent of CPU this job got: 96%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.05
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 2464
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 0
+	Minor (reclaiming a frame) page faults: 134
+	Voluntary context switches: 1
+	Involuntary context switches: 1
+	Swaps: 0
+	File system inputs: 7488
+	File system outputs: 0
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.1.4
+
+Released 2026-10-08.
+
+- Avoid reading children beyond `-maxdepth` in sequential depth-first and prune traversal.
+- Cache successful `-user` and `-group` name lookups per starting root, while preserving lazy evaluation and retrying failed lookups.
+- Remove the unsafe raw-pointer workaround from `-printf` output; use safe field borrowing instead.
+- Add regression coverage for owner lookup caching, depth boundaries, and `-printf`/`-fprintf` with multiple starting roots (84 tests total).
+- Add crate-level docs.rs documentation with usage, measured GNU find comparisons, and a checked library example.
+- Add reproducible Linux profiling with perf, strace, flamegraphs, raw measurements, and isolated optimization experiments. On the measured warm-cache ARM64 corpus, named ownership queries improved 2.5-2.6x and shallow depth-first traversal improved 4.2x; results depend on workload.
+- Update dependencies, including jwalk 0.9, and require Rust 1.99 or newer.
+- Expand CI to stable/nightly Rust on Ubuntu 24.04, Ubuntu 26.04, and Apple Silicon macOS 26. Verify packaged GNU/musl Linux binaries on both Ubuntu LTS releases and Debian 13, for amd64 and arm64.
+- Build Linux releases on Ubuntu 24.04 for older glibc compatibility. Prebuilt macOS releases now target Apple Silicon; Intel macOS remains source-build only.
+
 ## v0.1.3
 
 - Replace hand-written `--help` with clap-generated output

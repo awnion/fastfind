@@ -1,0 +1,44 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 272  of event 'cpu-clock:u'
+# Event count (approx.): 272818448
+#
+# Overhead  Command  Shared Object     Symbol                                                                                                                                           IPC   [IPC Coverage]
+# ........  .......  ................  ...............................................................................................................................................  ....................
+#
+    15.07%  lazy     libc.so.6         [.] __open64_nocancel                                                                                                                            -      -
+    12.87%  lazy     libc.so.6         [.] getdents64                                                                                                                                   -      -
+     7.72%  lazy     libc.so.6         [.] fstatat64                                                                                                                                    -      -
+     5.88%  lazy     libc.so.6         [.] __close_nocancel                                                                                                                             -      -
+     3.68%  lazy     lazy              [.] fastfind::eval::evaluate                                                                                                                     -      -
+     3.68%  lazy     libc.so.6         [.] malloc                                                                                                                                       -      -
+     3.31%  lazy     lazy              [.] fastfind::walker::walk_sequential_recursive                                                                                                  -      -
+     2.94%  lazy     lazy              [.] <std::fs::ReadDir as core::iter::traits::iterator::Iterator>::next                                                                           -      -
+     2.57%  lazy     libc.so.6         [.] cfree                                                                                                                                        -      -
+     2.57%  lazy     libc.so.6         [.] readdir64                                                                                                                                    -      -
+     1.84%  python3  python3.11        [.] _PyEval_EvalFrameDefault                                                                                                                     -      -
+     1.47%  lazy     lazy              [.] <std::fs::DirEntry>::file_type                                                                                                               -      -
+     1.47%  lazy     libc.so.6         [.] 0x000000000009e6e8                                                                                                                           -      -
+     1.10%  lazy     lazy              [.] _init                                                                                                                                        -      -
+     1.10%  lazy     lazy              [.] std::sys::fs::read_dir                                                                                                                       -      -
+     1.10%  lazy     libc.so.6         [.] 0x000000000008fac4                                                                                                                           -      -
+     1.10%  lazy     libc.so.6         [.] 0x000000000008fb18                                                                                                                           -      -
+     1.10%  lazy     libc.so.6         [.] 0x000000000009e6c0                                                                                                                           -      -
+     0.74%  lazy     lazy              [.] <alloc::raw_vec::RawVecInner<_>>::reserve::do_reserve_and_handle::<alloc::alloc::Global>                                                     -      -
+     0.74%  lazy     lazy              [.] <std::path::Path>::_join                                                                                                                     -      -
+     0.74%  lazy     lazy              [.] __errno_location@plt                                                                                                                         -      -
+     0.74%  lazy     libc.so.6         [.] 0x000000000008ea54                                                                                                                           -      -
+     0.74%  lazy     libc.so.6         [.] 0x000000000008ea58                                                                                                                           -      -
+     0.74%  lazy     libc.so.6         [.] 0x000000000008fb00                                                                                                                           -      -
+     0.74%  lazy     libc.so.6         [.] 0x000000000008fbac                                                                                                                           -      -
+     0.74%  lazy     libc.so.6         [.] 0x000000000008fc14                                                                                                                           -      -
+     0.74%  lazy     libc.so.6         [.] 0x0000000000091214                                                                                                                           -      -
+     0.74%  lazy     libc.so.6         [.] 0x000000000009d100                                                                                                                           -      -
+
+
+#
+# (Tip: Search options using a keyword: perf report -h <keyword>)
+#

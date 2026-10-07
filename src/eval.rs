@@ -16,6 +16,26 @@ use crate::expr::*;
 /// Quit signal - set to true when -quit is evaluated
 pub static QUIT_SIGNAL: AtomicBool = AtomicBool::new(false);
 
+#[cfg(unix)]
+#[derive(Default)]
+/// Successful owner-name resolutions for one evaluation context.
+pub struct NamedIdCache {
+    ids: std::collections::HashMap<String, u32>,
+}
+
+#[cfg(unix)]
+impl NamedIdCache {
+    fn resolve(&mut self, name: &str, lookup: impl FnOnce(&str) -> Option<u32>) -> Option<u32> {
+        if let Some(&id) = self.ids.get(name) {
+            return Some(id);
+        }
+        // Failed lookups remain retryable; cache only successful resolutions.
+        let id = lookup(name)?;
+        self.ids.insert(name.to_owned(), id);
+        Some(id)
+    }
+}
+
 /// Context for expression evaluation
 pub struct EvalContext<'a> {
     pub now: SystemTime,
@@ -25,6 +45,10 @@ pub struct EvalContext<'a> {
     pub stdout: &'a mut dyn Write,
     pub depth: usize,
     pub batch_exec: Vec<(Vec<ExecArg>, Vec<std::path::PathBuf>, bool)>, /* (args, collected_paths, is_execdir) */
+    #[cfg(unix)]
+    pub user_ids: NamedIdCache,
+    #[cfg(unix)]
+    pub group_ids: NamedIdCache,
 }
 
 /// Execute all pending batch commands
@@ -341,7 +365,7 @@ pub fn evaluate(expr: &Expr, entry: &mut EntryInfo, ctx: &mut EvalContext) -> io
             if let Ok(target_uid) = name.parse::<u32>() {
                 return Ok(uid == target_uid);
             }
-            match lookup_uid_by_name(name) {
+            match ctx.user_ids.resolve(name, lookup_uid_by_name) {
                 Some(target_uid) => Ok(uid == target_uid),
                 None => Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -359,7 +383,7 @@ pub fn evaluate(expr: &Expr, entry: &mut EntryInfo, ctx: &mut EvalContext) -> io
             if let Ok(target_gid) = name.parse::<u32>() {
                 return Ok(gid == target_gid);
             }
-            match lookup_gid_by_name(name) {
+            match ctx.group_ids.resolve(name, lookup_gid_by_name) {
                 Some(target_gid) => Ok(gid == target_gid),
                 None => Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -548,7 +572,7 @@ pub fn evaluate(expr: &Expr, entry: &mut EntryInfo, ctx: &mut EvalContext) -> io
         }
         Expr::FPrintf(path, tokens) => {
             let mut f = open_append(path)?;
-            eval_printf_to(tokens, entry, ctx, &mut f)?;
+            eval_printf_to(tokens, entry, ctx.starting_point, &mut f)?;
             Ok(true)
         }
         Expr::FLs(path) => {
@@ -986,18 +1010,13 @@ fn eval_printf(
     entry: &mut EntryInfo,
     ctx: &mut EvalContext,
 ) -> io::Result<()> {
-    // Temporarily take stdout to avoid double borrow
-    let stdout_ptr = ctx.stdout as *mut dyn Write;
-    // SAFETY: we're not using ctx.stdout while out is alive, and eval_printf_to
-    // only uses ctx for non-stdout fields
-    let out = unsafe { &mut *stdout_ptr };
-    eval_printf_to(tokens, entry, ctx, out)
+    eval_printf_to(tokens, entry, ctx.starting_point, ctx.stdout)
 }
 
 fn eval_printf_to(
     tokens: &[PrintfToken],
     entry: &mut EntryInfo,
-    ctx: &mut EvalContext,
+    starting_point: &Path,
     out: &mut dyn Write,
 ) -> io::Result<()> {
     for token in tokens {
@@ -1194,14 +1213,14 @@ fn eval_printf_to(
             }
             PrintfToken::SparseName => {
                 // %P - path relative to starting point
-                if let Ok(rel) = entry.path.strip_prefix(ctx.starting_point) {
+                if let Ok(rel) = entry.path.strip_prefix(starting_point) {
                     write!(out, "{}", rel.display())?;
                 } else {
                     write!(out, "{}", entry.path.display())?;
                 }
             }
             PrintfToken::StartingPoint => {
-                write!(out, "{}", ctx.starting_point.display())?;
+                write!(out, "{}", starting_point.display())?;
             }
         }
     }
@@ -1263,5 +1282,39 @@ fn linux_fstype_name(f_type: i64) -> &'static str {
         0xCAFE001 => "cifs",
         0xFF534D42 => "cifs",
         _ => "unknown",
+    }
+}
+
+#[cfg(all(test, unix))]
+mod owner_cache_tests {
+    use super::NamedIdCache;
+
+    #[test]
+    fn successful_names_are_resolved_once_and_independently() {
+        let mut cache = NamedIdCache::default();
+        let mut calls = 0;
+        let mut lookup = |name: &str| {
+            calls += 1;
+            Some(if name == "alice" { 1000 } else { 1001 })
+        };
+        assert_eq!(cache.resolve("alice", &mut lookup), Some(1000));
+        assert_eq!(cache.resolve("bob", &mut lookup), Some(1001));
+        assert_eq!(cache.resolve("alice", &mut lookup), Some(1000));
+        assert_eq!(cache.resolve("bob", &mut lookup), Some(1001));
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn failed_names_are_retried_and_later_success_is_cached() {
+        let mut cache = NamedIdCache::default();
+        let mut calls = 0;
+        let mut lookup = |_: &str| {
+            calls += 1;
+            if calls == 1 { None } else { Some(42) }
+        };
+        assert_eq!(cache.resolve("alice", &mut lookup), None);
+        assert_eq!(cache.resolve("alice", &mut lookup), Some(42));
+        assert_eq!(cache.resolve("alice", &mut lookup), Some(42));
+        assert_eq!(calls, 2);
     }
 }

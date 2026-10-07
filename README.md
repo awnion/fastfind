@@ -94,6 +94,9 @@ See [GNU_FIND_COVERAGE.md](GNU_FIND_COVERAGE.md) for the full compatibility matr
 - `opt-level = 3`, LTO, single codegen unit
 - 1.6-1.8x faster than GNU find, 1.05-1.1x faster than fd
 
+See the [Linux profiling report](docs/profiling/linux-arm64/README.md) for measured
+hotspots, flamegraphs, optimization experiments, and reproduction steps.
+
 ## Exit codes
 
 | Code | Meaning |

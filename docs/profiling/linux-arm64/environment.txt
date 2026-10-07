@@ -1,0 +1,15 @@
+Linux 7228c125d206 7.0.14-orbstack-00380-ga7e0a2dc9535 #1 SMP PREEMPT Fri Aug  7 03:48:40 UTC 2026 aarch64 GNU/Linux
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+rustc 1.99.0 (b940084d7 2026-09-28)
+perf version 6.1.187
+find (GNU findutils) 4.9.0
+41fee1f99f9276008b7cd112fca19dc3ea84ac32
+RUSTFLAGS=-Cforce-frame-pointers=yes
